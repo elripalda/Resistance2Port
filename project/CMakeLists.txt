@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 if(NOT DEFINED PORT_NAME)
-    set(PORT_NAME ResistanceFoM)
+    set(PORT_NAME Resistance2)
 endif()
 project(${PORT_NAME}
     VERSION 0.1.0
@@ -201,22 +201,22 @@ add_executable(${PROJECT_NAME}
 # helpers are already `static inline`, inlining lifted functions into each
 # other would grow the host frames of deeply nested guest calls, and their
 # command lines stay unchanged so they do not rebuild.
-# -DRFOM_FULL_INLINE=OFF builds the old way.
-option(RFOM_FULL_INLINE "Normal inlining (/Ob2) outside the lifted PPU code" ON)
-if(RFOM_FULL_INLINE AND MSVC)
+# -DPORT_FULL_INLINE=OFF builds the old way.
+option(PORT_FULL_INLINE "Normal inlining (/Ob2) outside the lifted PPU code" ON)
+if(PORT_FULL_INLINE AND MSVC)
     target_compile_options(ps3recomp_runtime PRIVATE /Ob2)
     set_source_files_properties(main.cpp stubs.cpp ${PS3RECOMP_SCAFFOLD}
         PROPERTIES COMPILE_OPTIONS "/Ob2")
 endif()
 
 if(SPU_SOURCES)
-    # Resistance port: RFOM_SPU_FAST compiles the per-access LS watch/probe check
+    # Resistance port: PORT_SPU_FAST compiles the per-access LS watch/probe check
     # (SPU_LS_NO_DBG) and the runtime SPU_XFLOAT_EXACT switch (SPU_XF_NO_EXACT)
     # out of the lifted SPU code. Each hid an out-of-line call behind a branch
     # on every LS access / float op, so the compiler kept every register in
     # memory: jobmod_6dc227fd went from 60k to 20k instructions.
-    option(RFOM_SPU_FAST "Lifted SPU code without LS debug probes / exact-float switch" ON)
-    if(RFOM_SPU_FAST)
+    option(PORT_SPU_FAST "Lifted SPU code without LS debug probes / exact-float switch" ON)
+    if(PORT_SPU_FAST)
         set(_spu_defs SPU_USE_DISPATCH_MT SPU_LS_NO_DBG SPU_XF_NO_EXACT)
     else()
         set(_spu_defs SPU_USE_DISPATCH_MT)
@@ -228,11 +228,11 @@ if(SPU_SOURCES)
         # Resistance port: the SPU helpers have SSE4.1/AVX2 paths (pshufb shufb,
         # vector float ops) that the default x86-64 baseline compiled out --
         # shufb alone was ~20% of the SPU job thread as a byte loop.
-        # -DRFOM_SPU_AVX2=OFF builds the old baseline.
-        option(RFOM_SPU_AVX2 "Build lifted SPU code with AVX2" OFF)
-        if(RFOM_SPU_AVX2 AND MSVC)
+        # -DPORT_SPU_AVX2=OFF builds the old baseline.
+        option(PORT_SPU_AVX2 "Build lifted SPU code with AVX2" OFF)
+        if(PORT_SPU_AVX2 AND MSVC)
             set_source_files_properties(${SPU_SOURCES} PROPERTIES COMPILE_OPTIONS "-O2;/arch:AVX2;/GS-")
-        elseif(RFOM_SPU_AVX2)
+        elseif(PORT_SPU_AVX2)
             set_source_files_properties(${SPU_SOURCES} PROPERTIES COMPILE_OPTIONS "-O2;-mavx2")
         else()
             set_source_files_properties(${SPU_SOURCES} PROPERTIES COMPILE_OPTIONS "-O2")
@@ -345,16 +345,16 @@ endif()
 # MOVBE -- any Zen/Haswell or later). Without FMA every PPC fmadd lowered to a
 # CALL into the CRT's software fma() (900+ call sites in one lifted file), and
 # without SSE4.1 nearbyint/trunc were calls too. Contraction stays off so only
-# the lifter's explicit fma() fuses. -DRFOM_PPU_V3=OFF builds the baseline.
-option(RFOM_PPU_V3 "Build lifted PPU code for x86-64-v3" ON)
+# the lifter's explicit fma() fuses. -DPORT_PPU_V3=OFF builds the baseline.
+option(PORT_PPU_V3 "Build lifted PPU code for x86-64-v3" ON)
 # v163: the lifted PPU code takes the guest-memory bounds as constants and its
-# slow paths through preserve_most wrappers (ppu_recomp.h). -DRFOM_PPU_FIXED=OFF
+# slow paths through preserve_most wrappers (ppu_recomp.h). -DPORT_PPU_FIXED=OFF
 # builds the old runtime-bounds path.
-option(RFOM_PPU_FIXED "Lifted PPU code: constant VM bounds + preserve_most slow paths" ON)
-if(RFOM_PPU_FIXED)
+option(PORT_PPU_FIXED "Lifted PPU code: constant VM bounds + preserve_most slow paths" ON)
+if(PORT_PPU_FIXED)
     set_source_files_properties(${RECOMP_SOURCES} PROPERTIES COMPILE_DEFINITIONS "PPU_FIXED_BOUNDS")
 endif()
-if(MSVC AND RFOM_PPU_V3)
+if(MSVC AND PORT_PPU_V3)
     set_source_files_properties(${RECOMP_SOURCES} PROPERTIES
         COMPILE_OPTIONS "/w;/bigobj;/clang:-O2;/clang:-march=x86-64-v3;/clang:-ffp-contract=off;/clang:-fno-math-errno")
 elseif(MSVC)

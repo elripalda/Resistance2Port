@@ -579,7 +579,7 @@ static void lt_conceal_sample(const float* last, unsigned v, float* l, float* r)
  * 10 s of port-0 audio: each channel's share of the energy, and "surround"
  * when the centre/LFE/surround channels carry sound, "STEREO" when only L/R
  * do (the broken-positions state, which a launch picks at random). */
-extern void rfom_snd_mode(int surround, double c_pct, double nan_pct);   /* project/stubs.cpp (v144) */
+extern void port_snd_mode(int surround, double c_pct, double nan_pct);   /* project/stubs.cpp (v144) */
 static void audio_mode_monitor(const float* src, u32 nch)
 {
     static double e[8]; static u32 blocks; static int last = -1;
@@ -612,7 +612,7 @@ static void audio_mode_monitor(const float* src, u32 nch)
                             (unsigned long long)GetTickCount64(),
                             mode ? "surround" : "STEREO", 100*e[2]/t, 100*e[3]/t, nans); fclose(mf); } }
 #endif
-        rfom_snd_mode(mode, 100*e[2]/t, samples ? 100.0 * (double)nans / (double)samples : 0.0);
+        port_snd_mode(mode, 100*e[2]/t, samples ? 100.0 * (double)nans / (double)samples : 0.0);
     }
     for (int c = 0; c < 8; c++) e[c] = 0;
     blocks = 0; nans = 0; samples = 0;
@@ -1053,7 +1053,7 @@ static void audio_mix_one_block(void)
         { extern uint64_t ps3_guest_system_time_us(void); port->ts_us = ps3_guest_system_time_us(); }
         /* Resistance port: AUDIO_LEAD (default 3 blocks, 16 ms): the index the
          * guest sees runs that many blocks AHEAD of the block this mixer reads.
-         * Fall of Man's libmixer writes the block AT the published index -- the
+         * The game's libmixer writes the block AT the published index -- the
          * one consumed 5.3 ms later -- so any wake-up later than one block left
          * that block unwritten (AUDIO_SENTINEL: up to 27% of blocks "never
          * written" in heavy scenes). The lead gives it 3 blocks of slack, the

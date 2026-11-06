@@ -2,8 +2,6 @@
 
 A static recompilation of the PS3 game *Resistance 2* into a native Windows program. No emulation of the CPU: the game's PowerPC and SPU code is translated to C/C++ and compiled for your PC. Graphics go through RPCS3's Vulkan renderer, with NVIDIA DLSS / AMD FSR upscaling, 60 fps, keyboard and mouse controls, and higher resolutions.
 
-This is the follow-up to my [Resistance: Fall of Man port](https://github.com/miroslavdanutalexandru-alt/Resistance-Fall-of-Man-Recomp), built on the same base.
-
 > ⚠️ **Not Perfect.** I have only tested it **on my PC** (Ryzen 5 5600X, GeForce RTX 5070, 32 GB RAM, Windows 11, 1080p screen) and haven't beaten the game. The campaign has been played through the opening Iceland levels; past that it's untested, so things could go wrong. Some crashes or freezes may happen.
 
 > **This repository contains no game files and no game code.** You need your own copy of the game. The setup builds everything game-specific on your PC from that copy.

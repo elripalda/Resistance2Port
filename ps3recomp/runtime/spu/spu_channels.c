@@ -1399,7 +1399,7 @@ void spu_ch_wake(spu_context* ctx)
      * waiter checks its predicate and goes to sleep under ch_wait_lock; a
      * producer that set the predicate and woke the CV WITHOUT it could land
      * between that check and the sleep, and the wake was lost -- the SPU then
-     * slept its whole 10 ms poll. Fall of Man's main thread feeds raw SPU
+     * slept its whole 10 ms poll. The game's main thread feeds raw SPU
      * command rings 8 entries deep and spins when one is full, so each lost
      * wake stalled the frame. Nothing else ever takes this lock (only
      * spu_ch_wait, around check-and-sleep), so taking it here cannot deadlock.
@@ -3033,7 +3033,7 @@ static int spu_smc_microstep(spu_context* ctx)
 /* ===========================================================================
  * Resistance port: SPU job differential test (SPU_DIFFTEST=<every Nth job>).
  *
- * Fall of Man's freezes and its missing/ghost geometry both trace to WWS job
+ * The game's freezes and its missing/ghost geometry both trace to WWS job
  * modules handing back impossible values. To find the instruction the lifter
  * gets wrong, a sampled job is run TWICE from the same starting state: first
  * through the interpreter (dry: its PUTs are recorded, not written), then
@@ -3137,7 +3137,7 @@ void spu_difftest_entry(spu_context* ctx)
       } }
     if (!want_lr || pc < 0x4000u || pc >= 0x3E000u || lr != want_lr) return;
     /* SPU_DIFFTEST_END=<hex>: the job ends by branching THERE (any stack
-     * depth) instead of returning to its link -- Fall of Man's jobs exit
+     * depth) instead of returning to its link -- the game's jobs exit
      * through the policy module's handler at 0x2CAC. */
     static uint32_t end_pc = 0xFFFFFFFFu;
     if (end_pc == 0xFFFFFFFFu) { const char* e = getenv("SPU_DIFFTEST_END"); end_pc = e ? (uint32_t)strtoul(e, 0, 16) : 0; }
@@ -3378,7 +3378,7 @@ static void spu_indirect_branch_full(spu_context* ctx)
      * masking is a no-op for already-valid targets. */
     ctx->pc &= SPU_LS_MASK;
     /* Resistance port: ...and the low two bits too -- instructions are word
-     * aligned and bi/bisl ignore them. Fall of Man's collision job keeps flags
+     * aligned and bi/bisl ignore them. The game's collision job keeps flags
      * in the low bits of its function-table entries (0x20203 -> code at
      * 0x20200); looking the raw value up found nothing and halted the policy
      * module (York's "Physics SPU Collision Timed Out!" freeze).
@@ -3910,7 +3910,7 @@ static void spu_indirect_branch_full(spu_context* ctx)
                    * it carried the garbage on (bad physics written back, then
                    * a PPU crash); halting killed the SPURS lane. End just
                    * this job through the policy module's job-exit handler
-                   * (0x2CAC in Fall of Man; the jobs branch there to finish,
+                   * (0x2CAC in the game; the jobs branch there to finish,
                    * at any stack depth). SPU_BADCALL_EXIT=0 returns as before. */
                   { static int ex = -1;
                     if (ex < 0) { const char* e = getenv("SPU_BADCALL_EXIT"); ex = e ? (int)strtoul(e, 0, 16) : 0; }
@@ -3945,7 +3945,7 @@ static void spu_indirect_branch_full(spu_context* ctx)
                   g_spu_trampoline_fn = spu_indirect_branch;   /* as SPU_RET does */
                   return;
               } }
-            /* Resistance port: Fall of Man's raw SPU 0 (image 300, the sound
+            /* Resistance port: The game's raw SPU 0 (image 300, the sound
              * engine) dispatches each command from the PPU through a handler
              * table (rawspu0 0xD8E0: index from the command block at 0xEB90).
              * A bad command index fetched an entry past the image -- LS

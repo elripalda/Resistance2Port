@@ -698,11 +698,11 @@ void cellGcmSetFlipMode(u32 mode)
     s_flip_mode = mode;
     if (s_r2rsx) r2rsx_set_flip_mode(mode);
 }
-/* v126: the port's profiler skips movie playback (Fall of Man sets VSYNC, 2, for movies) */
+/* v126: the port's profiler skips movie playback (the game sets VSYNC, 2, for movies) */
 u32 cellGcm_get_flip_mode(void) { return s_flip_mode; }
 
 void ppu_gcm_pump(void);
-/* Resistance port (v126): a title that paces itself (Fall of Man's frame
+/* Resistance port (v126): a title that paces itself (the game's frame
  * limiter) above 60 fps would be held by this wait for the 60 Hz flip beat on
  * every frame. The port turns it off then (cellGcm_set_waitflip_block(0)). */
 static volatile int s_waitflip_block = 1;
@@ -1149,7 +1149,7 @@ static void gcm_row_copy(u32 d, u32 s, u32 n)
     spu_lockline_unlock();
 }
 
-volatile int g_rfom_trace_left = 0;
+volatile int g_port_trace_left = 0;
 
 static void nv3089_blit(void)
 {
@@ -1160,7 +1160,7 @@ static void nv3089_blit(void)
     if (!out_w || !out_h || !in_pitch || !dst_pitch) return;
 #ifdef _WIN32
     /* Resistance port: a scaled blit INTO a display buffer is the frame's
-     * resolve (Fall of Man renders the scene into an anti-aliased surface at
+     * resolve (the game renders the scene into an anti-aliased surface at
      * 0x740000 and scales it onto the display with NV3089). The scene only
      * exists on the GPU, so the guest-memory copy below moves black; have the
      * backend composite that surface onto the backbuffer instead.
@@ -1891,25 +1891,25 @@ void cellGcm_wait_fifo_caught_up(unsigned max_ms)
  * quads into the one ring (the pad poll comes before the kick, too early);
  * its next import after the kick is where it waits now. Once per new `put`,
  * bounded, and not while the walker is parked on a semaphore the guest has to
- * release. RFOM_MENU_FIFO_SYNC=0 off. */
+ * release. PORT_MENU_FIFO_SYNC=0 off. */
 static void gcm_hle_fifo_sync(void)
 {
     static int ms = -1;
-    if (ms < 0) { const char* e = getenv("RFOM_MENU_FIFO_SYNC"); ms = e ? atoi(e) : 25; }
+    if (ms < 0) { const char* e = getenv("PORT_MENU_FIFO_SYNC"); ms = e ? atoi(e) : 25; }
     if (ms <= 0) return;
     extern PPU_THREAD_LOCAL ppu_context* g_active_ctx;
     if (!g_active_ctx) return;                       /* the ticker's pump, not a guest thread */
-    extern volatile unsigned long long g_rfom_play_ms;
-    extern volatile int g_rfom_pause_ui;
+    extern volatile unsigned long long g_port_play_ms;
+    extern volatile int g_port_pause_ui;
     /* v181: the front end always; the game only in its pause menu. In-engine
      * cutscenes and loads also leave the look code idle, and waiting there cost
      * York's crater intro ~half the main thread (F11). */
     static int fe = -1;
     if (fe < 0) { char mp[MAX_PATH] = ""; GetModuleFileNameA(NULL, mp, MAX_PATH);
                   const char* b = strrchr(mp, '\\'); b = b ? b + 1 : mp;
-                  fe = _stricmp(b, "ResistanceFoM.exe") ? 0 : 1; }
-    if (!fe && !g_rfom_pause_ui) return;
-    if (g_rfom_play_ms && GetTickCount64() - g_rfom_play_ms <= 200) return;   /* in play */
+                  fe = _stricmp(b, "PortFrontEnd.exe") ? 0 : 1; }
+    if (!fe && !g_port_pause_ui) return;
+    if (g_port_play_ms && GetTickCount64() - g_port_play_ms <= 200) return;   /* in play */
     if (!s_gcm_context_ea && !s_gcm_syscall_mode) return;
     static volatile u32 s_synced_put = 0xFFFFFFFFu;
     const u32 put = vm_read32(GCM_CONTROL_GUEST_ADDR + 0);
@@ -2492,10 +2492,10 @@ static void gcm_rsx_process_fifo_unlocked(void)
                   s1q = !(e && atoi(e));
                   fprintf(stderr, "[fifo] quick walk %s%c", quick ? "on" : "off", 10);
               }
-              extern volatile int g_rfom_trace_left;
+              extern volatile int g_port_trace_left;
               extern volatile long g_fifo_mhist_on;
               if (g_fifo_mhist_on) fifo_mhist_note(subch, method, type, count);
-              if (fast && count && (subch == 0 || (subch == 1 && s1q)) && g_rfom_trace_left <= 0) {
+              if (fast && count && (subch == 0 || (subch == 1 && s1q)) && g_port_trace_left <= 0) {
                   const u32 io0 = s_fifo_getoff + 4, io1 = s_fifo_getoff + count * 4;
                   const u32 dea = gcm_io2ea(io0);
                   if (dea && (io0 >> 20) == (io1 >> 20)) {
@@ -2620,8 +2620,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
                   if (live) rsx_live_draw_method((subch << 13) | m, vm_read32(dea)); }
                 /* Resistance port: TRACE_AT_PIC window (armed by cellVdec) --
                  * every FIFO method for a stretch of a movie's playback. */
-                { extern volatile int g_rfom_trace_left;
-                  if (g_rfom_trace_left > 0) { g_rfom_trace_left--;
+                { extern volatile int g_port_trace_left;
+                  if (g_port_trace_left > 0) { g_port_trace_left--;
                       printf("[mtrace] get=0x%08X subch=%u m=0x%04X = 0x%08X%c",
                              s_fifo_getoff, subch, m, vm_read32(dea), 10); } }
                 /* Resistance port: log each (subchannel, method) the first time

@@ -59,7 +59,7 @@ int lv2_deadline_passed(int64_t deadline)
  * polled. Overflow-safe split multiply (rem < qpf, so
  * rem * 79.8e6 < ~8e14 << 2^63).
  * -----------------------------------------------------------------------*/
-/* Resistance port: TSC-based timebase. Fall of Man reads mftb millions of
+/* Resistance port: TSC-based timebase. The game reads mftb millions of
  * times a second (profiling scope markers on the main thread); QPC plus two
  * 64-bit divides per read was ~30% of that thread. The invariant TSC is
  * calibrated against QPC once (~20 ms) and scaled with a 128-bit multiply.

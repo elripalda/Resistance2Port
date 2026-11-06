@@ -159,10 +159,10 @@ Step "5/5  Building (the first build takes 20-60 minutes)"
 $ffd = Join-Path $Port 'tools\ffmpeg_bin'
 if (-not (Test-Path (Join-Path $ffd 'avcodec-61.dll'))) {
     Info "Fetching FFmpeg 7.1.1 (for the game's videos)..."
-    $zip = Join-Path $env:TEMP 'rfom_ffmpeg.zip'
+    $zip = Join-Path $env:TEMP 'port_ffmpeg.zip'
     try { Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-full_build-shared.zip' -OutFile $zip }
     catch { Fail "Could not download FFmpeg from github.com." }
-    $tmp = Join-Path $env:TEMP 'rfom_ffmpeg'; if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
+    $tmp = Join-Path $env:TEMP 'port_ffmpeg'; if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
     Expand-Archive -LiteralPath $zip -DestinationPath $tmp
     New-Item -ItemType Directory -Force -Path $ffd | Out-Null
     Get-ChildItem $tmp -Recurse -Include 'avcodec-61.dll', 'avutil-59.dll', 'swresample-5.dll' | Copy-Item -Destination $ffd

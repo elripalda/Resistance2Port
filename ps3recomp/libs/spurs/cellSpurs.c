@@ -546,7 +546,7 @@ static s32 spurs_initialize_common(u32 spurs_ea, u32 nspus, const char* prefix)
     /* Resistance port: extra host lanes. A SPURS kernel cannot preempt, so a
      * workload pinned to one SPU waits until whatever holds that SPU returns.
      * On hardware the WWS job manager hands the SPU back through a list-stall
-     * interrupt this runtime does not model; Fall of Man pins a persistent
+     * interrupt this runtime does not model; the game pins a persistent
      * command job (wid 3) and its draw-sort job list (wid 1) to SPU 1, so the
      * draw sort never ran ("IGG::SpuBucketerDrawSort timeout", black level).
      * Extra lanes run any workload that has work and a non-zero priority on
@@ -1753,7 +1753,7 @@ static WklPm* spurs_resolve_pm(u32 ea, u32 wid)
 /* Resistance port: the kernel side of cellSpursModulePollStatus. The HLE poll
  * always answered "keep running", so a policy module that idles inside its own
  * loop (the WWS job manager waiting on an empty list) held its SPU forever.
- * Fall of Man pins two job lists to the same lane (wid 1 and wid 3, priority
+ * The game pins two job lists to the same lane (wid 1 and wid 3, priority
  * only on SPU 1): wid 3 never gave the lane back, wid 1's list was never
  * looked at, and IGG::SpuBucketerDrawSort timed out every frame -- the level
  * rendered black. A real SPURS kernel tells the module to exit when another
@@ -1863,7 +1863,7 @@ static u32 spurs_home_prio(u32 ea, u32 wid, u32 nspus)
  * lifted policy module with getllar/putllc on the shared list. Extra lanes enter the list as VIRTUAL
  * SPUs 1..n-1 (the instance has one real SPU), each with its own policy-module
  * context and its own per-SPU list row, never impersonating SPU 0 -- the
- * scheme of SPURS_VSPU, only for this list. (Fall of Man's SCREAM list, which
+ * scheme of SPURS_VSPU, only for this list. (the game's SCREAM list, which
  * turned to static when spread, was spread by impersonating a real SPU.) */
 u32 spurs_synth_lanes(void)
 {
@@ -1994,7 +1994,7 @@ static int spurs_lane_dispatch(struct SpursInst* si, u32 sn, u32 ea, u32 enabled
                         }
                     }
                     /* v182 (experiment, SPURS_VSPU=1): an any-SPU workload (a
-                     * non-zero priority on every real SPU -- Fall of Man's
+                     * non-zero priority on every real SPU -- the game's
                      * wid 6/8/9/10 lists) that is busy also runs on an extra
                      * lane as a VIRTUAL SPU numbered past the instance's real
                      * ones (3..5). Job lists keep a row per SPU for 6 SPUs, so
@@ -2033,7 +2033,7 @@ static int spurs_lane_dispatch(struct SpursInst* si, u32 sn, u32 ea, u32 enabled
                         for (u32 o = 0; o < si->nlanes; o++)
                             if (si->slots[o].busy && si->slots[o].wid == wid && si->slots[o].run_spu == r) taken = 1;
                         /* Resistance port: impersonate SPU r only while r is held
-                         * by a long-running workload (Fall of Man's persistent
+                         * by a long-running workload (the game's persistent
                          * command job pins SPU 1 -- the case extra lanes exist
                          * for). Running as r beside a SHORT dispatch on r put two
                          * live "SPU r"s side by side; per-SPU job-manager memory
@@ -2049,7 +2049,7 @@ static int spurs_lane_dispatch(struct SpursInst* si, u32 sn, u32 ea, u32 enabled
                                * repeating one DMA for SPURS_STALL_MS (default 2;
                                * 0 = off) is stalled, not busy -- on hardware the
                                * job manager's list-stall handling would give the
-                               * SPU back. Fall of Man: the SPU-1 geometry job
+                               * SPU back. The game: the SPU-1 geometry job
                                * (wid 3, picked up by an idle poll) spins on a
                                * token that only wid 1's job -- also SPU 1 --
                                * produces; it waited out the 50 ms hog rule
@@ -2096,7 +2096,7 @@ static int spurs_lane_dispatch(struct SpursInst* si, u32 sn, u32 ea, u32 enabled
                                * would have picked it first (the kernel weighs
                                * priority; this coordinator went round-robin),
                                * and what holds r may be a job spinning on this
-                               * very workload's output: Fall of Man's geometry
+                               * very workload's output: the game's geometry
                                * cull job (any SPU, priority 7) polls a word the
                                * one-job SPU-0 list (priority 4) writes, and
                                * every frame it took SPU 0 first waited out the
@@ -2517,7 +2517,7 @@ static DWORD WINAPI spurs_pm_worker(LPVOID p)
         /* Resistance port diagnostic (SPURS_SLOTLOG=1 enables; default follows R2_DIAG): York freezes
          * with a WWS job list whose per-SPU slot says "SPU n is on job k" while
          * nothing runs it. After every PM run, check the job-list headers the
-         * game's frame code waits on (fixed addresses in this build of FoM) and
+         * game's frame code waits on (fixed addresses in this build of the game) and
          * report a run that returned while its SPU's slot still names a job. */
         { static int sl = -1; if (sl < 0) { const char* e = getenv("SPURS_SLOTLOG"); sl = e ? atoi(e) : ps3_diag_enabled(); }
           static volatile LONG nlog = 0;
@@ -2548,7 +2548,7 @@ static DWORD WINAPI spurs_pm_worker(LPVOID p)
         /* Resistance port (v122b): the lane picks its own next workload as soon
          * as a run returns, instead of waking the kernel thread, which then
          * woke this worker again: two host thread wake-ups per policy-module
-         * run, ~80 us of idle SPU each. Fall of Man's job manager returns after
+         * run, ~80 us of idle SPU each. The game's job manager returns after
          * every job, so in heavy scenes SPU 2 sat ~30% idle in those gaps while
          * SCREAM's sound list (wid 5, SPU 2 only) needed 2+ synth ticks per
          * batch and the audio ring ran dry. Same selection rules, run by the
@@ -2693,7 +2693,7 @@ s32 cellSpursReadyCountStore(CellSpurs* spurs, CellSpursWorkloadId wid,
 {
     if (!spurs) return CELL_SPURS_CORE_ERROR_NULL_POINTER;
     if (wid >= CELL_SPURS_MAX_WORKLOAD) return CELL_SPURS_CORE_ERROR_INVAL;
-    /* Resistance port: lock-free fast path. Fall of Man stores a ready count
+    /* Resistance port: lock-free fast path. The game stores a ready count
      * for every job-list kick (thousands a second) and each one queued behind
      * the kernel thread's scan pass on si->lock: ~8% of the main thread in the
      * crater-exit slowdown (spurs_api_lock). The kernel reads the ready byte

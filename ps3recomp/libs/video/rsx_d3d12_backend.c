@@ -151,7 +151,7 @@ static HRESULT shc_compile_ex(const char* src, size_t len, const char* name, con
     u64 shk_h = 0;                       /* v128: this source's cache key */
     if (en) {
         u64 h = 14695981039346656037ull;
-        h = shc_hash("rfom-shc-v1", 11, h);
+        h = shc_hash("port-shc-v1", 11, h);
         h = shc_hash(target, strlen(target) + 1, h);
         h = shc_hash(entry, strlen(entry) + 1, h);
         h = shc_hash(src, len, h);
@@ -413,12 +413,12 @@ typedef struct {
     u64                   last;        /* v126: record-order stamp of its last use as a target */
     u64                   clast;       /* v189: stamp of its last COLOUR write (draw with cmask, colour clear) */
 } OffRT;
-#define MAX_OFF_RTS  256 /* v171: 64 -> 256. York packs dozens of small shadow maps per frame at changing offsets and sizes; with 64 slots ~26 surfaces a frame were destroyed and re-created (30-40 fps). Slots must stay < 256: tex_rt packs them as 0x1000|slot etc. and unpacks with & 0xFF. Was: demosaic: 6-surface chain x2; Fall of Man: ~20 shadow/FX surfaces a frame, plus their size variants (v126: 48 -> 64) */
+#define MAX_OFF_RTS  256 /* v171: 64 -> 256. York packs dozens of small shadow maps per frame at changing offsets and sizes; with 64 slots ~26 surfaces a frame were destroyed and re-created (30-40 fps). Slots must stay < 256: tex_rt packs them as 0x1000|slot etc. and unpacks with & 0xFF. Was: demosaic: 6-surface chain x2; the game: ~20 shadow/FX surfaces a frame, plus their size variants (v126: 48 -> 64) */
 #define RT_SRV_BASE  5   /* SRV heap slots 5..(5+MAX_OFF_RTS-1) hold offscreen-RT SRVs */
 /* Per-draw SRV windows: each VP draw gets 4 consecutive descriptors (t0-t3)
  * so multi-unit fragment programs see all their textures (demosaic's
  * interpolation passes sample 3 units). */
-/* Resistance port: texture units carried per draw (was 4). Fall of Man's
+/* Resistance port: texture units carried per draw (was 4). The game's
  * world shaders sample units 4 and 7; with a 4-entry SRV table and four
  * static samplers their pipelines failed (E_INVALIDARG) and the scene drew
  * black. */
@@ -2080,7 +2080,7 @@ static void wait_batch(u32 b)
 }
 /* Resistance port: RSX_PIPELINE (default 1) lets the CPU record batch N+1
  * while the GPU runs batch N, instead of draining the GPU after every batch.
- * Fall of Man's frame is ~5 mid-frame batches, and the full sync after each
+ * The game's frame is ~5 mid-frame batches, and the full sync after each
  * left the FIFO thread waiting on the GPU about half its time -- and the PPU,
  * which waits for the RSX at the end of every frame, waiting with it. Per-batch
  * resources (vertex/index/constant halves, command allocator, descriptor
@@ -3673,7 +3673,7 @@ static u32 dr_cube_mask(const D3D12DrawRecord* dr)
 
 /* Resistance port: texel-space (UNNORM, format bit 0x40) units of the draw
  * whose pipeline is being fetched. The decompiler samples with the raw
- * coordinate, so a texture addressed in texels -- Fall of Man's movie quad,
+ * coordinate, so a texture addressed in texels -- the game's movie quad,
  * texcoords 0..1280 x 0..720 -- sampled one wrapped corner texel and the whole
  * cinematic came out one flat colour. rsx_fp_apply_unnorm_scale divides the
  * coordinate by the size in the HLSL; the sizes are baked in, so they are part
@@ -5160,7 +5160,7 @@ static int vp_upload_tex_slot(u32 off, u32 w, u32 h, u32 fmt, int cube, u32 mips
 }
 /* v160k: the front end's button pictures. Its menus draw the PS3 buttons from
  * one 512x256 DXT5 icon atlas (decoded-pixel hash 0xE82A7DC8; Circle at
- * 379..419 x 15..55, Cross at 467..507 x 15..55). In ResistanceFoM.exe those
+ * 379..419 x 15..55, Cross at 467..507 x 15..55). In the front-end executable those
  * two cells are redrawn as key caps -- "ESC" (back) and "SPACE" (select) --
  * and re-encoded to DXT5 in the upload buffer. RSX_FE_KEYCAPS=0 disables. */
 /* v160m: drawn at any cell size S (44 at full size; each smaller mip level is
@@ -5789,7 +5789,7 @@ static int vp_upload_tex_slot_impl(u32 off, u32 w, u32 h, u32 fmt, int cube, u32
             }
         }
     }
-    /* v160i diag: front end (ResistanceFoM.exe) small textures -> logs\fe_icons\
+    /* v160i diag: front end (the front-end executable) small textures -> logs\fe_icons\
      * once each, named by a hash of their pixels, composited on grey -- to
      * find the X / O button pictures of the menus and swap them for key names.
      * RSX_FE_ICONS=0 disables. */
@@ -5797,7 +5797,7 @@ static int vp_upload_tex_slot_impl(u32 off, u32 w, u32 h, u32 fmt, int cube, u32
       if (fe < 0) { char mp[MAX_PATH] = ""; GetModuleFileNameA(NULL, mp, MAX_PATH);
                     const char* b = strrchr(mp, '\\'); b = b ? b + 1 : mp;
                     const char* e = getenv("RSX_FE_ICONS");
-                    fe = !_stricmp(b, "ResistanceFoM.exe") ? 1 : 0;
+                    fe = !_stricmp(b, "PortFrontEnd.exe") ? 1 : 0;
                     s_fe_dump = e && atoi(e);
                     if (s_fe_dump) CreateDirectoryA("logs\\fe_icons", NULL); }
       /* v162c: in-game (pause/options menus) too, but only the atlas shape -- no decode cost elsewhere */
@@ -6424,7 +6424,7 @@ static void vp_record_cb(u32 slot, int vs_idx, const D3D12DrawRecord* dr)
     float c00 = st->vertex_constants[0][0];   /* v181: not read back from dst (write-combined) */
     int garbage = !(c00 > 0.0f && c00 < 8.0f);
     /* Resistance port: opt-in only (VP_GARBAGEFIX=1). A legitimate transform
-     * with c[0] <= 0 -- a camera turned 90+ degrees, Fall of Man's death camera
+     * with c[0] <= 0 -- a camera turned 90+ degrees, the game's death camera
      * looking down at the body -- was replaced by a made-up projection and the
      * death screen rendered black. */
     { static int gf = -1; if (gf < 0) { const char* e = getenv("VP_GARBAGEFIX"); gf = e ? atoi(e) : 0; }
@@ -6543,7 +6543,7 @@ static DXGI_FORMAT rsx_surface_dxgi(u32 fmt)
     }
 }
 
-/* v126: render-target size variants. Fall of Man renders its shadow passes
+/* v126: render-target size variants. The game renders its shadow passes
  * with the colour surface left at an earlier pass's offset and the clip at
  * each shadow map's size, so one offset is targeted at several sizes a frame
  * (0x1680000: 288x288, then 320x192, every frame). The pool kept one resource
@@ -6752,7 +6752,7 @@ static int off_rt_get(u32 off, u32 w, u32 h, u32 rsx_fmt)
         u32 pitch = (w * bpp + 255) & ~255u;
         u32 src = cellGcmResolveOffset(off);
         /* Resistance port: seeding a render target from guest VRAM is only right
-         * when the CPU wrote that memory. Fall of Man's scene target (0x740000,
+         * when the CPU wrote that memory. The game's scene target (0x740000,
          * AA surface, pitch 2x the clip width) is only ever written by the RSX,
          * so guest VRAM there is stale garbage -- read with the wrong pitch it
          * became the blue striped menu background. Default off for this port;
@@ -6861,7 +6861,7 @@ static D3D12_CPU_DESCRIPTOR_HANDLE off_rt_rtv(int slot)
 /* Resistance port: one depth buffer PER colour target. On the RSX the zeta
  * surface keeps its contents when the pass switches to another target and
  * back; the backend used ONE shared depth buffer and cleared it at every
- * target switch. Fall of Man interleaves its scene with shadow passes and the
+ * target switch. The game interleaves its scene with shadow passes and the
  * mid-frame flush starts each new batch with a switch, so the scene's depth was
  * wiped mid-frame and the sky/fog pass (drawn where depth is far) painted over
  * every opaque draw before it: York's "ghost town". Each offscreen slot now
@@ -7039,7 +7039,7 @@ static D3D12_CPU_DESCRIPTOR_HANDLE rt_dsv(int slot, D3D12_CPU_DESCRIPTOR_HANDLE 
 
 /* Resistance port: depth buffers keyed by the ZETA surface (offset + size)
  * instead of by the colour target they were drawn with. On the RSX a depth
- * surface is its own memory at SET_SURFACE_ZETA_OFFSET; Fall of Man renders
+ * surface is its own memory at SET_SURFACE_ZETA_OFFSET; the game renders
  * each character/object shadow map depth-only into its own zeta surface while
  * the colour offset is whatever the previous pass left behind, then samples the
  * map at the zeta address. Keyed by colour slot, the map lived in the depth of
@@ -7181,7 +7181,7 @@ static D3D12_CPU_DESCRIPTOR_HANDLE zeta_dsv(u32 zoff, u32 w, u32 h, D3D12_CPU_DE
     return zt_handle(z);
 }
 
-/* v125: a depth surface sampled as an A8R8G8B8 COLOUR texture. Fall of Man's
+/* v125: a depth surface sampled as an A8R8G8B8 COLOUR texture. The game's
  * ground fog (fp 0x01676801) and soft particles (0x01675CC1, 0x01676001)
  * rebuild scene depth from the main zeta surface (0xEC0000, read through
  * format 0xE5 = A8R8G8B8|LN|UN at its 2x-AA size 2560x720, crossbar 0x6AE4):
@@ -7578,7 +7578,7 @@ static D3D12_PRIMITIVE_TOPOLOGY topo_to_d3d(u32 t)
 
 /* v189: an NV3089 copy whose SOURCE is a surface the GPU renders (the scene).
  * cellGcmSys does the copy in guest memory, where that surface was never
- * written, so the destination got stale bytes. Fall of Man copies a window of
+ * written, so the destination got stale bytes. The game copies a window of
  * the screen around each Auger round into scratch memory at 0x1680000+ and
  * refracts it (fp 0x16764C1): black blobs. Recorded in draw order instead; the
  * replay renders the window into a render target at the destination address,
@@ -8834,7 +8834,7 @@ static void render_frame_impl(void)
 
     /* Clear color and depth -- but only at the start of a guest frame. A
      * batch that continues a frame after a mid-frame flush must keep them:
-     * clearing the shared depth buffer there let Fall of Man's sky/fog pass
+     * clearing the shared depth buffer there let the game's sky/fog pass
      * (drawn where depth is still far) paint over every opaque draw of the
      * first batch -- the "ghost town" in York. RSX_MIDFLUSH_KEEP=0 restores
      * the old clear-every-batch behaviour. */
@@ -9921,7 +9921,7 @@ skip_dump_consider: ;
        * but that stall. RSX_VSYNC=1 restores it. */
       static int vs = -1;
       /* v132: the value is the DXGI sync interval (1-4): on a 165 Hz screen
-       * RSX_VSYNC=3 with RFOM_FPS=55 shows every frame for exactly 3 refreshes
+       * RSX_VSYNC=3 with PORT_FPS=55 shows every frame for exactly 3 refreshes
        * (18.2 ms), where a free-running 60 alternates 2 and 3 (judder). */
       if (vs < 0) { const char* e = getenv("RSX_VSYNC"); vs = e ? atoi(e) : 0;
                     if (vs < 0) vs = 0; if (vs > 4) vs = 4;
@@ -11419,7 +11419,7 @@ static u32 upload_strip_vp_indexed(const rsx_state* state, u32 first, u32 count,
     return n;
 }
 
-/* Resistance port: mid-frame flush. A Fall of Man gameplay frame redraws its
+/* Resistance port: mid-frame flush. A the game gameplay frame redraws its
  * geometry into several shadow maps and the scene -- well over the per-frame
  * vertex buffer (MAX_VERTICES) -- and everything recorded after it filled was
  * silently dropped: the frame stopped at ~360 draws, before the scene was
@@ -12404,7 +12404,7 @@ void rsx_d3d12_backend_present(void)
      * that partial present right after the FIFO ring recycle was the visible
      * blink. Keep the ticker present solely as the boot-time fallback (before
      * the first framed clear arrives). */
-    /* Resistance port: a guest frame with NO clear in it (Fall of Man's movie
+    /* Resistance port: a guest frame with NO clear in it (the game's movie
      * player draws one full-screen quad straight over the last frame) never
      * reaches the clear-boundary present, so its draws piled up unpresented
      * and the cinematic stayed black. A flip whose frame cleared nothing is

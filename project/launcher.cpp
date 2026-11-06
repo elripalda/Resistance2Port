@@ -1,4 +1,4 @@
-// Resistance 2 -- PC port launcher (v2, from the Fall of Man port).
+// Resistance 2 -- PC port launcher.
 //
 // One window: a sidebar (Display / Graphics / Controls / About + Play) and a
 // page of settings drawn by hand with GDI+ (no stock controls, so it looks the
@@ -1190,7 +1190,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR cmd, int show)
     wc.lpfnWndProc = wndproc; wc.hInstance = inst;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hIcon = LoadIcon(inst, MAKEINTRESOURCE(1)); if (!wc.hIcon) wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
-    wc.lpszClassName = "RfomLauncher2";
+    wc.lpszClassName = "PortLauncher2";
     RegisterClassExA(&wc);
 
     make_scale(NULL);

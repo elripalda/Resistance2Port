@@ -32,7 +32,7 @@ static void dbg_printf(const char* fmt, ...);
 extern "C" void spu_dbg_dump_all(void (*out)(const char*));
 extern "C" void spu_dbg_dump_ls(unsigned which, unsigned lsa, unsigned len, void (*out)(const char*));
 static void dbg_out_str(const char* s) { dbg_printf("%s", s); }
-extern "C" volatile int g_rfom_trace_left;
+extern "C" volatile int g_port_trace_left;
 extern "C" volatile unsigned long long g_pad_inj_until;
 extern "C" volatile unsigned int g_pad_inj_btn, g_pad_inj_sticks;
 extern "C" unsigned long long ps3_ms_now(void);
@@ -545,20 +545,20 @@ static void dbg_prof_frame_threads(unsigned sec)
  * process runs far more busy threads than the CPU has: SPURS lanes and raw
  * SPUs poll, the FIFO thread spin-waits. Any of them landing on the main
  * thread's SMT sibling takes a large share of that core's throughput. Every
- * second: main -> logical CPU RFOM_MAIN_CPU (default 2), every other thread
+ * second: main -> logical CPU PORT_MAIN_CPU (default 2), every other thread
  * of the process -> all CPUs except that one and its sibling (CPU ^ 1).
- * RFOM_MAIN_CORE=0 disables. */
+ * PORT_MAIN_CORE=0 disables. */
 static DWORD WINAPI main_core_keeper(LPVOID)
 {
-    const char* e = getenv("RFOM_MAIN_CPU");
+    const char* e = getenv("PORT_MAIN_CPU");
     const int cpu = e ? atoi(e) : 2;   /* not CPU 0: Windows routes most interrupts there */
     DWORD_PTR proc = 0, sys = 0;
     if (!GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys)) return 0;
     const DWORD_PTR mine = (DWORD_PTR)1 << cpu;
     const DWORD_PTR pair = mine | ((DWORD_PTR)1 << (cpu ^ 1));
     /* v181: the RSX FIFO thread is the next limiter (F11: ~98% busy in York's
-     * slow stretch) -- it gets the next core to itself. RFOM_FIFO_CPU=-1 off. */
-    const char* fe = getenv("RFOM_FIFO_CPU");
+     * slow stretch) -- it gets the next core to itself. PORT_FIFO_CPU=-1 off. */
+    const char* fe = getenv("PORT_FIFO_CPU");
     const int fcpu = fe ? atoi(fe) : 4;
     DWORD_PTR fmine = 0, fpair = 0;
     if (fcpu >= 0 && fcpu < 64 && (fcpu >> 1) != (cpu >> 1)) {
@@ -608,14 +608,14 @@ static DWORD WINAPI main_core_keeper(LPVOID)
  * written to logs\padwatch.txt as module RVAs -- which lifted functions read
  * the look stick, i.e. where the camera turns it into yaw/pitch. */
 extern "C" volatile u32 g_pad_data_ea0;
-extern "C" volatile uint32_t rfom_pad_out_ea = 0;   /* set by func_000D4BC4 (game) */
-extern "C" volatile uint32_t rfom_pad_slot_ea = 0, rfom_pad_obj_ea = 0;
+extern "C" volatile uint32_t port_pad_out_ea = 0;   /* set by func_000D4BC4 (game) */
+extern "C" volatile uint32_t port_pad_slot_ea = 0, port_pad_obj_ea = 0;
 /* v147g: func_002B12A0 runs for more than one controller object; remember the
  * latest slot of each (up to 4) and watch one of each. */
 static volatile uint32_t s_pw_obj[4], s_pw_slot[4]; static volatile LONG s_pw_nobj;
-extern "C" void rfom_pad_slot_note(uint32_t obj, uint32_t slot)
+extern "C" void port_pad_slot_note(uint32_t obj, uint32_t slot)
 {
-    rfom_pad_slot_ea = slot; rfom_pad_obj_ea = obj;
+    port_pad_slot_ea = slot; port_pad_obj_ea = obj;
     LONG n = s_pw_nobj;
     for (LONG i = 0; i < n; i++) if (s_pw_obj[i] == obj) { s_pw_slot[i] = slot; return; }
     if (n < 4) { s_pw_obj[n] = obj; s_pw_slot[n] = slot; s_pw_nobj = n + 1; }
@@ -663,7 +663,7 @@ static int pw_set(DWORD tid, const DWORD64* a, int on)
     CloseHandle(th);
     return ok;
 }
-extern "C" volatile uint32_t g_rfom_opts_ea;   /* cellPad.c */
+extern "C" volatile uint32_t g_port_opts_ea;   /* cellPad.c */
 static void pad_watch_run(void)
 {
     const u32 ea = g_pad_data_ea0;
@@ -677,14 +677,14 @@ static void pad_watch_run(void)
     /* v147d: the slot's remapped axes +0x10..+0x1C (func_002B12A0 writes
      * them from the control-scheme table at obj+0x1AC0) -- the values the
      * camera actually consumes. */
-    const u32 po = rfom_pad_slot_ea;
+    const u32 po = port_pad_slot_ea;
     DWORD64 a[4] = { 0, 0, 0, 0 };
     /* v158: the player's own controller object (its layout table is the
      * options block the mouse look found), LEFT stick: remapped +0x10/+0x14
      * and raw +0x40/+0x44 -- to find what reads it during a Menial grab. */
     u32 pslot = 0;
     for (LONG i = 0; i < s_pw_nobj; i++)
-        if (g_rfom_opts_ea && vm_read32(s_pw_obj[i] + 0x1AC0) == g_rfom_opts_ea) pslot = s_pw_slot[i];
+        if (g_port_opts_ea && vm_read32(s_pw_obj[i] + 0x1AC0) == g_port_opts_ea) pslot = s_pw_slot[i];
     if (!pslot && s_pw_nobj) pslot = s_pw_slot[0];
     if (pslot) { a[0] = (DWORD64)(vm_base + pslot + 0x10); a[1] = (DWORD64)(vm_base + pslot + 0x14);
                  a[2] = (DWORD64)(vm_base + pslot + 0x40); a[3] = (DWORD64)(vm_base + pslot + 0x44); }
@@ -711,7 +711,7 @@ static void pad_watch_run(void)
     static int s_pw_run = 0; char pwn[64]; snprintf(pwn, sizeof pwn, "logs\\padwatch_%d.txt", ++s_pw_run);
     FILE* f = fopen(pwn, "w");
     if (f) {
-        fprintf(f, "# pad buffer 0x%08X, history slot 0x%08X (object 0x%08X), module base 0x%llX, %ld objects:", ea, po, rfom_pad_obj_ea, (unsigned long long)mb, (long)s_pw_nobj);
+        fprintf(f, "# pad buffer 0x%08X, history slot 0x%08X (object 0x%08X), module base 0x%llX, %ld objects:", ea, po, port_pad_obj_ea, (unsigned long long)mb, (long)s_pw_nobj);
         for (LONG i = 0; i < s_pw_nobj; i++) fprintf(f, " obj 0x%08X slot 0x%08X (dr%ld);", s_pw_obj[i], s_pw_slot[i], (long)i);
         fputc(10, f);
         for (LONG i = 0; i < s_pw_n && i < 128; i++)
@@ -813,24 +813,24 @@ static DWORD WINAPI debug_console(LPVOID param)
               continue;
           } }
         /* Resistance port: automatic F11. Once a second, the guest flip
-         * rate; two seconds in a row under RFOM_AUTOPROF_FPS (default 26) but
+         * rate; two seconds in a row under PORT_AUTOPROF_FPS (default 26) but
          * above 8 (not a load screen or pause) -> profile the main thread and
-         * take a 10 s frame trace, at most twice per run. RFOM_AUTOPROF=0 off. */
+         * take a 10 s frame trace, at most twice per run. PORT_AUTOPROF=0 off. */
         if (it % 50 == 0 && s_dbg_main_tid) {
             static int ap_on = -1, ap_fps = 26, ap_done = 0, ap_low = 0, ap_hot = 0, ap_hot_done = 0;
             static unsigned ap_last = 0;
-            if (ap_on < 0) { const char* e = getenv("RFOM_AUTOPROF"); ap_on = e ? atoi(e) : 0;   /* v142: off by default -- the profile itself stalls the game */
+            if (ap_on < 0) { const char* e = getenv("PORT_AUTOPROF"); ap_on = e ? atoi(e) : 0;   /* v142: off by default -- the profile itself stalls the game */
                              /* v126: game.self only -- the front end's menus run below
                               * the gameplay target and would use up both profiles */
                              { const char* bp = getenv("PS3_BOOT_PATH");
                                if (!bp || !strstr(bp, "game.self")) ap_on = 0; }
-                             /* v126: 3/4 of the frame-rate target (RFOM_FPS, default 60) */
-                             const char* r = getenv("RFOM_FPS");
+                             /* v126: 3/4 of the frame-rate target (PORT_FPS, default 60) */
+                             const char* r = getenv("PORT_FPS");
                              int tgt = (r && *r) ? atoi(r) : 60;
                              if (r && (*r == 'o' || *r == 'O')) tgt = 30;
                              if (tgt <= 0) tgt = 60; if (tgt > 120) tgt = 120; if (tgt < 30) tgt = 30;
                              ap_fps = tgt * 3 / 4;
-                             const char* f = getenv("RFOM_AUTOPROF_FPS"); if (f) ap_fps = atoi(f); }
+                             const char* f = getenv("PORT_AUTOPROF_FPS"); if (f) ap_fps = atoi(f); }
             const unsigned fc = cellGcm_flip_request_count();
             const unsigned d = fc - ap_last; ap_last = fc;
             /* movies set VSYNC flips (SetFlipMode 2; gameplay uses HSYNC, 1)
@@ -952,7 +952,7 @@ static DWORD WINAPI debug_console(LPVOID param)
         } else if (!strcmp(verb, "prof") && sscanf(cmd, "%*s %u %u", &a, &b) >= 1) {
             dbg_prof((DWORD)a, b ? b : 5);
         } else if (!strcmp(verb, "mtrace") && sscanf(cmd, "%*s %u", &a) == 1) {
-            g_rfom_trace_left = (int)a;
+            g_port_trace_left = (int)a;
             dbg_printf("  tracing the next %u FIFO methods into the run log%c", a, 10);
         } else if (!strcmp(verb, "pad")) {
             /* pad <hexbuttons> <lx> <ly> <rx> <ry> <ms>: hold on port 0 (sticks 0..255, 128 = centre) */
@@ -1062,11 +1062,11 @@ static DWORD WINAPI freeze_relauncher(LPVOID)
  * (the title sets VSYNC flips for movies, HSYNC for gameplay), write every
  * thread's stack and the SPU
  * state to logs\moviehang_<tick>.txt once, so the next report says where it
- * waits. RFOM_MOVIE_WATCHDOG=0 turns it off; =<secs> changes the delay. */
+ * waits. PORT_MOVIE_WATCHDOG=0 turns it off; =<secs> changes the delay. */
 extern "C" unsigned long long cellVdec_endseq_pending_ms(void);
 static DWORD WINAPI movie_watchdog(LPVOID)
 {
-    const char* e = getenv("RFOM_MOVIE_WATCHDOG");
+    const char* e = getenv("PORT_MOVIE_WATCHDOG");
     const unsigned secs = e ? (unsigned)atoi(e) : 20u;
     if (!secs) return 0;
     HMODULE self = NULL;

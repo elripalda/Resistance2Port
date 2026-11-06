@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resistance: Fall of Man port -- hand edits to the lifted PPU code, kept as
+"""Resistance 2 port -- hand edits to the lifted PPU code, kept as
 data so the code can be regenerated from the player's own copy of the game.
 
   extract <edited_dir> <fresh_dir> <hooks.json>   record the edits

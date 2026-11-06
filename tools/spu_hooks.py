@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resistance: Fall of Man port -- hand edits to the lifted SPU modules
+"""Resistance 2 port -- hand edits to the lifted SPU modules
 (project/spu/<module>/spu_recomp.c), kept as data.
 
   extract <cur.c> <raw.c> <post.c> <out.json>
@@ -12,7 +12,7 @@
 """
 import json, re, sys
 sys.path.insert(0, __file__.rsplit('/', 1)[0] if '/' in __file__ else '.')
-from rfom_hooks import hunks, apply_hunks
+from ppu_hooks import hunks, apply_hunks
 
 FR = re.compile(r'^void (\w+_spu_func_[0-9A-F]+)\(spu_context\* ctx\) \{$')
 TAIL = re.compile(r'^(#undef _SRC_RL|#define _SRC_RL .*|\s*)$')

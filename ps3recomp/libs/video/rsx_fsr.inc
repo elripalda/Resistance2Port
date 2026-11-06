@@ -7,7 +7,7 @@
  *
  * What FSR needs and where it comes from here:
  *   colour   the game's scene surface (the display-sized offscreen colour
- *            target most draws go to -- 0x740000 in Fall of Man), just before
+ *            target most draws go to -- 0x740000 in the game), just before
  *            the first draw that samples it (the post / HUD composite).
  *   jitter   a sub-pixel Halton offset added to every scene draw's viewport
  *            offset (vp_posoffset.xy), i.e. to clip space, at record time.
@@ -27,7 +27,7 @@
  *
  * RSX_FSR=2: NVIDIA DLAA (DLSS at native resolution) instead of FSR, on the same
  * colour / depth / motion / jitter inputs. NVIDIA code lives only in
- * rfom_dlss.dll (project/rfom_dlss.cpp) + nvngx_dlss.dll beside the exe; if either
+ * port_dlss.dll (project/port_dlss.cpp) + nvngx_dlss.dll beside the exe; if either
  * is missing or the GPU can't run DLSS it falls back to FSR 3.1.
  * RSX_DLSS_PRESET=<n>: NGX render preset (0 = NVIDIA default, 11 = K, 10 = J).
  * RSX_DLSS_JITTER_SIGN=-1: negate the jitter passed to DLSS (diagnostic).
@@ -371,12 +371,12 @@ static u32 s_fsr_last_frame;         /* last frame dispatched (reset on disconti
 static u32 s_fsr_cnt[MAX_OFF_RTS];   /* scene pick: display-sized draws per slot this frame */
 static LARGE_INTEGER s_fsr_t_last;
 
-/* ---- NVIDIA DLAA through rfom_dlss.dll (RSX_FSR=2) ---- */
-typedef void (*RfomDlssLog)(const char*);
+/* ---- NVIDIA DLAA through port_dlss.dll (RSX_FSR=2) ---- */
+typedef void (*PortDlssLog)(const char*);
 static HMODULE s_dlss_dll; static int s_dlss_fail, s_dlss_on, s_dlss_need, s_dlss_bad;
 static u32 s_dlss_rw, s_dlss_rh;     /* render size the DLSS feature was made for */
 static float s_fsr_up_r;             /* render thread: upscale share of the scene being built */
-static int  (*p_dlss_init)(ID3D12Device*, const wchar_t*, RfomDlssLog);
+static int  (*p_dlss_init)(ID3D12Device*, const wchar_t*, PortDlssLog);
 static int  (*p_dlss_create)(ID3D12GraphicsCommandList*, unsigned, unsigned, unsigned, unsigned, int, unsigned);
 static int  (*p_dlss_eval)(ID3D12GraphicsCommandList*, ID3D12Resource*, ID3D12Resource*, ID3D12Resource*, ID3D12Resource*,
                            float, float, float, float, int, float);
@@ -389,16 +389,16 @@ static int dlss_load(void)
     wchar_t dir[MAX_PATH]; DWORD n = GetModuleFileNameW(NULL, dir, MAX_PATH);
     while (n && dir[n - 1] != L'\\' && dir[n - 1] != L'/') n--;
     dir[n ? n - 1 : 0] = 0;
-    HMODULE m = LoadLibraryA("rfom_dlss.dll");
+    HMODULE m = LoadLibraryA("port_dlss.dll");
     if (m) {
-        p_dlss_init    = (int (*)(ID3D12Device*, const wchar_t*, RfomDlssLog))(void*)GetProcAddress(m, "rfom_dlss_init");
-        p_dlss_create  = (int (*)(ID3D12GraphicsCommandList*, unsigned, unsigned, unsigned, unsigned, int, unsigned))(void*)GetProcAddress(m, "rfom_dlss_create");
+        p_dlss_init    = (int (*)(ID3D12Device*, const wchar_t*, PortDlssLog))(void*)GetProcAddress(m, "port_dlss_init");
+        p_dlss_create  = (int (*)(ID3D12GraphicsCommandList*, unsigned, unsigned, unsigned, unsigned, int, unsigned))(void*)GetProcAddress(m, "port_dlss_create");
         p_dlss_eval    = (int (*)(ID3D12GraphicsCommandList*, ID3D12Resource*, ID3D12Resource*, ID3D12Resource*, ID3D12Resource*,
-                                  float, float, float, float, int, float))(void*)GetProcAddress(m, "rfom_dlss_eval");
-        p_dlss_release = (void (*)(void))(void*)GetProcAddress(m, "rfom_dlss_release");
+                                  float, float, float, float, int, float))(void*)GetProcAddress(m, "port_dlss_eval");
+        p_dlss_release = (void (*)(void))(void*)GetProcAddress(m, "port_dlss_release");
     }
     if (!m || !p_dlss_init || !p_dlss_create || !p_dlss_eval || !p_dlss_release) {
-        fprintf(stderr, "[DLSS] rfom_dlss.dll not found next to the exe (or incomplete) -- using FSR 3.1%c", 10);
+        fprintf(stderr, "[DLSS] port_dlss.dll not found next to the exe (or incomplete) -- using FSR 3.1%c", 10);
         s_dlss_fail = 1; return 0;
     }
     if (!p_dlss_init(s_d3d.device, dir, dlss_log)) {

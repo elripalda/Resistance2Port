@@ -118,7 +118,7 @@ static void vdec_on_picture(void* ctx, const VdecFfPicture* pic)
      * sends every one of them) gets the next one on the stream's clock; a
      * player that paces display by PTS otherwise never shows a second picture. */
     const u32 ticks = pic->frame_ticks ? pic->frame_ticks : 3003u;
-    /* Resistance port (v192): Fall of Man's own movie demuxer sends every AU
+    /* Resistance port (v192): The game's own movie demuxer sends every AU
      * with pts = {upper 0, lower 0xFFFFFFFF}: "no time stamp" in the low word
      * only (a PTS is 33 bits; the upper word just carries bit 32). That was
      * taken as a real PTS, so every picture of a movie had the SAME time stamp.
@@ -162,7 +162,7 @@ static void vdec_notify_new_pics(CellVdecHandle handle)
  * Decoding is host-side, so the guest's buffer is never touched; memSize only
  * has to be something the title can allocate. cmdDepth sizes the title's own
  * AU queue, so it must not be 0. Unimplemented, the call left the struct
- * unfilled and a movie player (Resistance: Fall of Man) gave up and retried
+ * unfilled and a movie player (the game) gave up and retried
  * forever. */
 s32 cellVdecQueryAttr(const CellVdecType* type, void* attr)
 {
@@ -179,7 +179,7 @@ s32 cellVdecQueryAttr(const CellVdecType* type, void* attr)
 /* cellVdecOpen(type, res, cb, handle) -- FOUR arguments, like cellAdecOpen.
  * cb is a guest pointer to { u32 cbFunc; u32 cbArg; }. Declared with five,
  * `handle` came from r7 instead of r6: the handle was written somewhere
- * random and the title's own handle stayed 0 (Resistance: Fall of Man opened
+ * random and the title's own handle stayed 0 (the game opened
  * handle 1, then called StartSeq(0)); four Opens later every call was BUSY. */
 s32 cellVdecOpen(const CellVdecType* type, const CellVdecResource* res,
                   const CellVdecCb* cb, CellVdecHandle* handle)
@@ -359,7 +359,7 @@ s32 cellVdecDecodeAu(CellVdecHandle handle, s32 mode, const CellVdecAuInfo* auIn
 
 /* Guest-resident pic items. cellVdecGetPicItem hands the title a POINTER to a
  * CellVdecPicItem, so it has to live in guest memory, big-endian; writing
- * &host_struct through the guest's out-pointer crashed Resistance: Fall of Man
+ * &host_struct through the guest's out-pointer crashed the game
  * inside its PICOUT callback. One 0x100-byte block per decoder after cellAdec's
  * scratch (VM_HLE_INJECT_BASE + 0x40000..0x50000): the item at +0, the codec
  * info it points to at +0x80.
@@ -519,10 +519,10 @@ static s32 vdec_take_picture(VdecSlot* v, u32 dst, u32 type, u32 matrix, u8 alph
     { static int at = -2, cnt = 0, seen = 0;
       if (at == -2) { const char* e = getenv("TRACE_AT_PIC"); at = -1;
                       if (e && sscanf(e, "%d,%d", &at, &cnt) != 2) at = -1; }
-      extern volatile int g_rfom_trace_left;
+      extern volatile int g_port_trace_left;
       if (at >= 0 && seen++ == at) {
           printf("[mtrace] armed at picture %d for %d methods\n", at, cnt);
-          g_rfom_trace_left = cnt;
+          g_port_trace_left = cnt;
       } }
     if (dst)                                           /* NULL: a skip */
         vdec_store_picture(dst, q->yuv, q->item.width, q->item.height,

@@ -311,7 +311,7 @@ static const char* s_kbm_default =
     "mouse_release_key = F8     # free / recapture the mouse cursor\n";
 
 /* Resistance port (v148/v149): direct mouse look. The game's look code
- * (game.elf func_002A4D14, project/stubs.cpp rfom_mouselook) adds mouse counts
+ * (game.elf func_002A4D14, project/stubs.cpp port_mouselook) adds mouse counts
  * straight to the player's yaw/pitch and cancels the turning the right stick
  * would have done. The stick is STILL fed from the mouse as before (v149):
  * the game reads it for more than the camera -- shaking off a grabbing
@@ -337,28 +337,28 @@ static int s_menu_mouse = 1; static long s_menu_step = 150;   /* v160 */
 /* v153: melee and interact on separate inputs. On PS3 one button (Triangle)
  * does both: it uses a switch/door/vehicle when one is in reach and melees
  * otherwise. Keys bound to TRIANGLE now only melee; keys bound to INTERACT
- * only use things: project/stubs.cpp (rfom_use_begin) hands the game's
+ * only use things: project/stubs.cpp (port_use_begin) hands the game's
  * "use" checks (func_00296EBC, func_00295FC8) the INTERACT key instead of
  * Triangle. With a controller, pad_interact = <button> does the same for that
  * button (NONE = as on PS3). */
 volatile unsigned long long g_kbm_mouse_abs = 0;     /* total mouse travel, counts */
-volatile unsigned long long g_rfom_play_ms = 0;   /* v162: last tick the in-play look code ran (stubs.cpp) */
-volatile int g_rfom_pause_ui = 0;   /* v162c: the pause menu loaded its text (stubs.cpp); cleared when play resumes */
-volatile double g_rfom_view_fov = 82.0;   /* v190e: the player's view FOV (stubs.cpp rfom_fov_note) */
-volatile int g_rfom_space_start = 0;   /* v160v: set by stubs.cpp while a level intro card waits for Start */
-volatile int g_rfom_use_kbm = 0;              /* an INTERACT key is held */
-volatile int g_rfom_kbm_interact_bound = 0;   /* controls.txt binds INTERACT */
-volatile int g_rfom_input_kbm = 0;            /* port 0 is the keyboard (no controller) */
+volatile unsigned long long g_port_play_ms = 0;   /* v162: last tick the in-play look code ran (stubs.cpp) */
+volatile int g_port_pause_ui = 0;   /* v162c: the pause menu loaded its text (stubs.cpp); cleared when play resumes */
+volatile double g_port_view_fov = 82.0;   /* v190e: the player's view FOV (stubs.cpp port_fov_note) */
+volatile int g_port_space_start = 0;   /* v160v: set by stubs.cpp while a level intro card waits for Start */
+volatile int g_port_use_kbm = 0;              /* an INTERACT key is held */
+volatile int g_port_kbm_interact_bound = 0;   /* controls.txt binds INTERACT */
+volatile int g_port_input_kbm = 0;            /* port 0 is the keyboard (no controller) */
 /* Resistance 2: project/stubs.cpp (r2_text_patch, r2_menu_icon) sets this to
  * switch the on-screen button prompts and the menus' button icons between keys
  * and PS3 buttons; called every poll
  * with the current mode (it returns at once when nothing changed). */
 void (*volatile g_r2_input_mode_cb)(int kbm) = 0;
-volatile u16 g_rfom_pad_btns0 = 0;            /* controller port 0 buttons (CELL_PAD_CTRL_*) */
-volatile u16 g_rfom_pad_interact = 0;         /* controller interact button, 0 = as on PS3 */
+volatile u16 g_port_pad_btns0 = 0;            /* controller port 0 buttons (CELL_PAD_CTRL_*) */
+volatile u16 g_port_pad_interact = 0;         /* controller interact button, 0 = as on PS3 */
 static void ctl_extra_load(void)
 {
-    /* Resistance 2: no migration. FoM rewrote a file with TRIANGLE and no
+    /* Resistance 2: no migration. An older build rewrote a file with TRIANGLE and no
      * INTERACT (TRIANGLE -> INTERACT, V = melee); in R2 Triangle also switches
      * weapon and INTERACT presses Triangle itself (pad_poll_keyboard). */
     FILE* f = fopen("controls.txt", "r");
@@ -371,11 +371,11 @@ static void ctl_extra_load(void)
             if (sscanf(line, " %63s", k) == 1 && sscanf(eq + 1, " %63s", v) == 1) {
                 if (!_stricmp(v, "INTERACT")) has_inter = 1;
                 if (!_stricmp(k, "pad_interact")) {
-                    u16 b = 0; g_rfom_pad_interact = (kbm_action(v, &b) == KA_BTN) ? b : 0; }
+                    u16 b = 0; g_port_pad_interact = (kbm_action(v, &b) == KA_BTN) ? b : 0; }
             } }
     }
     fclose(f);
-    g_rfom_kbm_interact_bound = has_inter;
+    g_port_kbm_interact_bound = has_inter;
 }
 static void kbm_load(void)
 {
@@ -405,7 +405,7 @@ static void kbm_load(void)
         if (!_stricmp(k, "menu_mouse_step"))  { s_menu_step = atol(v); continue; }
         int vk = kbm_key(k); u16 btn = 0; int act = kbm_action(v, &btn);
         if (!vk || !act) { printf("[controls] ignored line: %s = %s\n", k, v); continue; }
-        if (act == KA_INTERACT) g_rfom_kbm_interact_bound = 1;
+        if (act == KA_INTERACT) g_port_kbm_interact_bound = 1;
         if (s_kbm_n < (int)(sizeof s_kbm / sizeof s_kbm[0])) { s_kbm[s_kbm_n].vk = vk; s_kbm[s_kbm_n].act = act; s_kbm[s_kbm_n].btn = btn; s_kbm_n++; }
     }
     if (f) fclose(f);
@@ -434,13 +434,13 @@ static u8 kbm_mouse_axis(double v)
  * Keys are bound to ACTIONS in the launcher, so a key's button is translated
  * through the default -> current table: a swap made on the controller screen
  * changes the controller, never what a key does. */
-volatile u32 g_rfom_opts_ea = 0;
+volatile u32 g_port_opts_ea = 0;
 static const u16 s_def_layout[16] = { 0x0004, 0x0080, 0x0040, 0x0800, 0x1000, 0x4000, 0x0020, 0x0010,
                                       0x8000, 0x0008, 0x0001, 0x1000, 0x2000, 0x4000, 0x0002, 0x0400 };   /* as shipped (v152 log) */
 static u32 kbm_unswap(u32 hsb)
 {
     extern uint8_t* vm_base;
-    const u32 o = g_rfom_opts_ea;
+    const u32 o = g_port_opts_ea;
     { static int said = 0;   /* v190e: say once when the layout table was never found */
       if (!o && hsb && !said) { said = 1; printf("[controls] game button layout: options block not found yet (no swap applied)\n"); } }
     if (!o || !vm_base || !hsb) return hsb;
@@ -489,7 +489,7 @@ static void pad_poll_keyboard(void)
         /* Release everything on focus loss, or a key held while alt-tabbing
          * would stay down forever; and give the mouse back. */
         hs->buttons = 0;
-        g_rfom_use_kbm = 0;
+        g_port_use_kbm = 0;
         hs->analog_lx = hs->analog_ly = 128;
         hs->analog_rx = hs->analog_ry = 128;
         hs->trigger_l2 = hs->trigger_r2 = 0;
@@ -522,12 +522,12 @@ static void pad_poll_keyboard(void)
       if (w > 0) wheel_up_frames = 4; else if (w < 0) wheel_dn_frames = 4;
       /* v190f: in a sniper scope the game's zoom starts slow and speeds up the
        * longer its button is HELD, so separate wheel taps only inched it. In
-       * the scope each notch holds the zoom button for RFOM_SCOPE_HOLD_MS
+       * the scope each notch holds the zoom button for PORT_SCOPE_HOLD_MS
        * (default 130) more, up to 400 ms ahead: steady scrolling = one long
        * hold that accelerates like a held d-pad. 0 = taps as before. */
       static int hold = -1;
-      if (hold < 0) { const char* e = getenv("RFOM_SCOPE_HOLD_MS"); hold = e ? atoi(e) : 130; }
-      if (w && hold > 0 && g_rfom_view_fov > 1.0 && g_rfom_view_fov < 45.0) {
+      if (hold < 0) { const char* e = getenv("PORT_SCOPE_HOLD_MS"); hold = e ? atoi(e) : 130; }
+      if (w && hold > 0 && g_port_view_fov > 1.0 && g_port_view_fov < 45.0) {
           const ULONGLONG tn = GetTickCount64();
           ULONGLONG* u = w > 0 ? &s_scope_up_until : &s_scope_dn_until;
           if (w > 0) s_scope_dn_until = 0; else s_scope_up_until = 0;   /* reversing stops the other way */
@@ -538,7 +538,7 @@ static void pad_poll_keyboard(void)
           *u = b;
       } }
     { const ULONGLONG tn = GetTickCount64();
-      if (!(g_rfom_view_fov > 1.0 && g_rfom_view_fov < 45.0)) s_scope_up_until = s_scope_dn_until = 0;   /* left the scope */
+      if (!(g_port_view_fov > 1.0 && g_port_view_fov < 45.0)) s_scope_up_until = s_scope_dn_until = 0;   /* left the scope */
       if (tn < s_scope_up_until && wheel_up_frames < 1) wheel_up_frames = 1;
       if (tn < s_scope_dn_until && wheel_dn_frames < 1) wheel_dn_frames = 1; }
 
@@ -567,15 +567,15 @@ static void pad_poll_keyboard(void)
      * button -- so Shift zoomed in and also stood the player up, while the wheel
      * only zoomed out (d-pad down). Scoped: the crouch keys don't press L2, and a
      * wheel-up notch presses L2 (zoom in) in place of its normal button.
-     * RFOM_SCOPE_WHEEL=0 = old behaviour. */
+     * PORT_SCOPE_WHEEL=0 = old behaviour. */
     { static int en = -1;
-      if (en < 0) { const char* e = getenv("RFOM_SCOPE_WHEEL"); en = e ? atoi(e) : 0; }   /* v190g: off -- the user's save had crouch <-> d-pad up swapped; with the shipped layout the scope zooms on d-pad up/down and this made wheel-up crouch */
+      if (en < 0) { const char* e = getenv("PORT_SCOPE_WHEEL"); en = e ? atoi(e) : 0; }   /* v190g: off -- the user's save had crouch <-> d-pad up swapped; with the shipped layout the scope zooms on d-pad up/down and this made wheel-up crouch */
       static int fe = -1;
       if (fe < 0) { char mp[MAX_PATH] = ""; GetModuleFileNameA(NULL, mp, MAX_PATH);
                     const char* b = strrchr(mp, '\\'); b = b ? b + 1 : mp;
-                    fe = _stricmp(b, "ResistanceFoM.exe") ? 0 : 1; }
+                    fe = _stricmp(b, "PortFrontEnd.exe") ? 0 : 1; }
       if (en && !fe) {
-          const double fov = g_rfom_view_fov;
+          const double fov = g_port_view_fov;
           if (fov > 1.0 && fov < 45.0) {
               btns &= (u16)~CELL_PAD_CTRL_L2;
               if (wup_btn) btns = (u16)((btns & ~wup_btn) | CELL_PAD_CTRL_L2);
@@ -592,7 +592,7 @@ static void pad_poll_keyboard(void)
     long mdx = InterlockedExchange(&g_kbm_mouse_dx, 0), mdy = InterlockedExchange(&g_kbm_mouse_dy, 0);
     if (!g_kbm_capture) mdx = mdy = 0;
     g_kbm_mouse_abs += (unsigned long long)(labs(mdx) + labs(mdy));   /* v159: grab escape meter */
-    /* v160: menus (front end, ResistanceFoM.exe) on keyboard & mouse. The
+    /* v160: menus (front end, the front-end executable) on keyboard & mouse. The
      * front end only knows the d-pad and Cross/Circle, so: moving the mouse
      * steps the highlight (one d-pad press per menu_mouse_step counts), the
      * wheel and arrow keys/WASD step too, left click / Enter / Space = select
@@ -602,7 +602,7 @@ static void pad_poll_keyboard(void)
     { static int fe = -1;
       if (fe < 0) { char mp[MAX_PATH] = ""; GetModuleFileNameA(NULL, mp, MAX_PATH);
                     const char* b = strrchr(mp, '\\'); b = b ? b + 1 : mp;
-                    fe = (!_stricmp(b, "ResistanceFoM.exe") && s_menu_mouse) ? 1 : 0;
+                    fe = (!_stricmp(b, "PortFrontEnd.exe") && s_menu_mouse) ? 1 : 0;
                     if (fe) printf("[controls] menu mode: WASD / arrows move, Space / Enter select, Esc / Backspace back\n"); }
       if (fe) {
         static long acc_x = 0, acc_y = 0; static int pend_x = 0, pend_y = 0;
@@ -647,18 +647,18 @@ static void pad_poll_keyboard(void)
     { static int fe2 = -1;
       if (fe2 < 0) { char mp[MAX_PATH] = ""; GetModuleFileNameA(NULL, mp, MAX_PATH);
                      const char* b = strrchr(mp, '\\'); b = b ? b + 1 : mp;
-                     fe2 = _stricmp(b, "ResistanceFoM.exe") ? 1 : 0; }
+                     fe2 = _stricmp(b, "PortFrontEnd.exe") ? 1 : 0; }
       /* v190c: holding the weapon wheel (R2) also stops the in-play look code,
        * which made this think a menu was open: a held S then pressed d-pad down
        * = "previous grenade" (user: E sometimes switched grenades). While R2 is
        * held, and for 300 ms after, it is gameplay, not a menu. */
       static ULONGLONG s_r2_ms = 0;
       if (btns & CELL_PAD_CTRL_R2) s_r2_ms = now;
-      const int menu = fe2 && g_rfom_play_ms && now - g_rfom_play_ms > 200 && (!s_r2_ms || now - s_r2_ms > 300);
+      const int menu = fe2 && g_port_play_ms && now - g_port_play_ms > 200 && (!s_r2_ms || now - s_r2_ms > 300);
       { static int was = -1;
         if (menu != was) { was = menu; static int n = 0;
           if (ps3_diag_enabled() && n++ < 200) { FILE* f = fopen("logs\\menumode.txt", n == 1 ? "w" : "a");
-                           if (f) { fprintf(f, "t=%llu menu=%d space_start=%d pause_ui=%d\n", now, menu, (int)g_rfom_space_start, (int)g_rfom_pause_ui); fclose(f); } } } }
+                           if (f) { fprintf(f, "t=%llu menu=%d space_start=%d pause_ui=%d\n", now, menu, (int)g_port_space_start, (int)g_port_pause_ui); fclose(f); } } } }
       static int s_esc_armed = 0;
       if (!menu) s_esc_armed = 0;
       if (menu) {
@@ -672,7 +672,7 @@ static void pad_poll_keyboard(void)
         /* v162c: in the pause menu Esc = back (O), like G; on the top page O also resumes.
          * The Esc press that opened the pause must be let go first. */
         if (!KD(VK_ESCAPE)) s_esc_armed = 1;
-        if (g_rfom_pause_ui) {
+        if (g_port_pause_ui) {
             btns &= (u16)~CELL_PAD_CTRL_START;
             if (s_esc_armed && KD(VK_ESCAPE)) btns |= CELL_PAD_CTRL_CIRCLE;
         }
@@ -680,17 +680,17 @@ static void pad_poll_keyboard(void)
         lx = ly = 0;   /* the stick would fight the d-pad on some screens */
         menu_raw = 1;  /* v162b: menus read raw buttons -- the controller-screen swap (e.g. crouch <-> d-pad up) must not apply */
       } }
-    if (g_rfom_space_start && (GetAsyncKeyState(VK_SPACE) & 0x8000)) btns |= CELL_PAD_CTRL_START;   /* v160v */
+    if (g_port_space_start && (GetAsyncKeyState(VK_SPACE) & 0x8000)) btns |= CELL_PAD_CTRL_START;   /* v160v */
     /* v186: the front end's first-run screens (initial setup, notices) say
      * "Press the SPACE bar" -- the relabelled Start prompt -- but only Enter
      * worked there (new-player test). In the front-end exe Space also presses Start. */
     { static int fe3 = -1;
       if (fe3 < 0) { char mp[MAX_PATH] = ""; GetModuleFileNameA(NULL, mp, MAX_PATH);
                      const char* b = strrchr(mp, '\\'); b = b ? b + 1 : mp;
-                     fe3 = _stricmp(b, "ResistanceFoM.exe") ? 0 : 1; }
+                     fe3 = _stricmp(b, "PortFrontEnd.exe") ? 0 : 1; }
       if (fe3 && (GetAsyncKeyState(VK_SPACE) & 0x8000)) btns |= CELL_PAD_CTRL_START; }
     hs->buttons   = menu_raw ? btns : kbm_unswap(btns);   /* v152: undo the in-game button swaps for the keyboard */
-    g_rfom_use_kbm = interact;
+    g_port_use_kbm = interact;
     hs->connected = 1;
     hs->analog_lx = (u8)(lx < 0 ? 0 : lx > 0 ? 255 : 128);
     hs->analog_ly = (u8)(ly < 0 ? 0 : ly > 0 ? 255 : 128);
@@ -758,7 +758,7 @@ static void pad_poll_xinput(void)
         if (gp->wButtons & XINPUT_GAMEPAD_X)              btns |= CELL_PAD_CTRL_SQUARE;
 
         s_host_state[i].buttons = btns;
-        if (i == 0) g_rfom_pad_btns0 = btns;
+        if (i == 0) g_port_pad_btns0 = btns;
 
         /* Analog sticks. PS3 Y axis is inverted vs XInput (up = 0). Reflect about
          * 128 (256 - x), NOT 255 - x: the latter turns a centered stick into 127,
@@ -995,9 +995,9 @@ static void pad_poll_backend(void)
 #endif
 #ifdef _WIN32
     { static int once = 0; if (!once) { once = 1; ctl_extra_load(); } }
-    if (!s_host_state[0].connected) g_rfom_pad_btns0 = 0;
-    g_rfom_input_kbm = !s_host_state[0].connected;
-    { void (*cb)(int) = g_r2_input_mode_cb; if (cb) cb(g_rfom_input_kbm); }
+    if (!s_host_state[0].connected) g_port_pad_btns0 = 0;
+    g_port_input_kbm = !s_host_state[0].connected;
+    { void (*cb)(int) = g_r2_input_mode_cb; if (cb) cb(g_port_input_kbm); }
     if (!s_host_state[0].connected) pad_poll_keyboard();
 #endif
 }
@@ -1014,7 +1014,7 @@ s32 cellPadInit(u32 max_connect)
         return CELL_PAD_ERROR_ALREADY_OPENED;
 
     /* The bound is the 127-slot pad table, not the 7 ports: larger requests
-     * are accepted and clamped. Resistance: Fall of Man asks for 8; rejected,
+     * are accepted and clamped. The game asks for 8; rejected,
      * the library stayed closed, every GetInfo failed and the title never
      * polled the pad -- stuck on "Press the START button". */
     if (max_connect == 0 || max_connect > 127)

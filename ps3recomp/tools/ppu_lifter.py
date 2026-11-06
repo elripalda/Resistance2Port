@@ -231,7 +231,7 @@ static inline uint64_t vm_read64_inl(uint64_t a)
 
 /* Resistance port: inline guest-STORE fast paths, the twin of the loads above.
  * Every lifted store was an out-of-line call through watch / null-page / PT /
- * coherence probes -- ~25% of Fall of Man's main thread. The runtime sets
+ * coherence probes -- ~25% of the game's main thread. The runtime sets
  * vm_inline_st_ok when no store diagnostic is armed; a store to a line an SPU
  * has reserved (g_spu_coh_bitmap_p) still takes the out-of-line path, which
  * serialises it against PUTLLC and raises the SPU's lost-reservation event.

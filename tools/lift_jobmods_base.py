@@ -174,7 +174,7 @@ def main():
         name = os.path.splitext(os.path.basename(path))[0]         # jobmod_<sha>_e<entry>
         sha  = name.split("_")[1]
         entry_off = struct.unpack_from(">I", raw, 0x10)[0]
-        # Per-module link base (Resistance FoM: most are linked at 0x4000, two at
+        # Per-module link base (most are linked at 0x4000, two at
         # 0x7000). Derived from the entry's `ila $r2, <entry+0x38+base>` probe.
         BASE = 0x4000
         for _o in range(entry_off, min(entry_off + 0x100, len(raw)), 4):

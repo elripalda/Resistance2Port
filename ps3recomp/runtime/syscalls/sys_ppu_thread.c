@@ -562,7 +562,7 @@ int64_t sys_ppu_thread_create(ppu_context* ctx)
      * each miss is an audible gap. A mild boost, not TIME_CRITICAL: these
      * threads sleep between polls.
      * ponytail: two host levels only; map the full range if a title needs it. */
-    /* Resistance port: guest priority < 100 (Fall of Man: syn_tick_timer 10,
+    /* Resistance port: guest priority < 100 (the game: syn_tick_timer 10,
      * AudioDisplayPS3 50, the surround mixer 90-94) -> HIGHEST. */
     if (priority < 100)
         SetThreadPriority(t->host_thread, THREAD_PRIORITY_HIGHEST);

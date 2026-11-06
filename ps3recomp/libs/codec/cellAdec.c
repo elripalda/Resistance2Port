@@ -18,7 +18,7 @@
 #include "ps3emu/log_first.h"
 #include "ffmpeg_runtime.h"
 
-/* Resistance port: real AC3 decoding (Fall of Man's cutscene audio) through
+/* Resistance port: real AC3 decoding (the game's cutscene audio) through
  * the run-time FFmpeg, in the PCM format the title asked for at StartSeq
  * (CellAdecParamAc3: word size, output mode, LFE, channel map). The stub
  * delivered silence. ADEC_AC3=0 = silence again. */
@@ -425,7 +425,7 @@ s32 cellAdecDecodeAu(CellAdecHandle handle, const CellAdecAuInfo* auInfo)
         vm_write32(it + PCMITEM_START_ADDR, pcm_ea);
         vm_write32(it + PCMITEM_SIZE,       pcm_bytes);
         /* bsiInfo must point at a codec info block, not be null. Resistance:
-         * Fall of Man sizes each AC3 block from bsiInfo+0x14; with a null
+         * The game sizes each AC3 block from bsiInfo+0x14; with a null
          * pointer that read address 0x14 and came back 0, so its ring buffer
          * never filled, it never started its audio port, and its movie player
          * waited forever. ponytail: only that output-size word is filled; the

@@ -113,7 +113,7 @@ unsigned long spu_raw_host_tid(unsigned n)
 
 /* Resistance port: a PPU stop request (RUNCNTL = 0) must actually stop the SPU.
  * It used to only flip the status word: the host thread kept running the old
- * program, so when Fall of Man reloads raw SPU 1's program on a death/checkpoint
+ * program, so when the game reloads raw SPU 1's program on a death/checkpoint
  * reload and writes RUNCNTL = RUN again, raw_spu_start saw the thread "already
  * up" and returned -- the old instance carried on with its old state, never
  * restarting at the entry point. The thread now leaves at its next blocking
@@ -344,7 +344,7 @@ static void raw_spu_start(raw_spu* s)
                                                s->get_hi[r] - s->get_lo[r]);
         s_pending_entry = spu_workload_find_img(fp, &s_pending_image_id);
         /* Resistance port: a program whose loaded image carries per-load data
-         * at its tail (Fall of Man's second raw SPU differs only past 0x56E0
+         * at its tail (the game's second raw SPU differs only past 0x56E0
          * between level loads) never matches the whole-run fingerprint. Ports
          * also register a "head" fingerprint over the first 0x2000 bytes. */
         if (!s_pending_entry && s->get_hi[r] - s->get_lo[r] > 0x2000u) {
@@ -468,7 +468,7 @@ static void raw_spu_start(raw_spu* s)
 #ifdef _WIN32
     s->thread = CreateThread(NULL, 1u << 20, raw_spu_thread, s, 0, NULL);
     if (!s->thread) InterlockedExchange(&s->started, 0);
-    /* Resistance port: raw SPU 0 is Fall of Man's sound engine. It parks on a
+    /* Resistance port: raw SPU 0 is the game's sound engine. It parks on a
      * channel between commands, so a high priority costs nothing; at normal
      * priority it was scheduled late under load and the mix underran
      * (crackle). SPU_RAW_PRIO=0 off. */

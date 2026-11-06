@@ -119,7 +119,7 @@
     "/* Resistance port (v141): the full barrier (PPC sync) as a locked no-op",
     " * read-modify-write of the stack top -- what Linux uses for smp_mb() on",
     " * x86-64. Same StoreLoad ordering for ordinary memory as mfence, at a",
-    " * fraction of the cost on Zen 2; Fall of Man's job-list helpers",
+    " * fraction of the cost on Zen 2; the game's job-list helpers",
     " * (func_005290DC & co., ~7% of the main thread) run one per call.",
     " * PPU_FENCE_MFENCE=1 at build time keeps mfence. */",
     "#  if (defined(__x86_64__) || defined(_M_X64)) && (defined(__clang__) || defined(__GNUC__)) && !defined(PPU_FENCE_MFENCE)",

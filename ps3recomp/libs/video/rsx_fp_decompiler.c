@@ -533,7 +533,7 @@ static void fp_shadow_helper(Out* p, u32 unit, u32 cube_mask,
     snprintf(tex, sizeof tex, cube_mask ? "rsx_tex%u" : "rsx_tex[%u]", unit);
     /* RSX texture ZFUNC runs the other way round from the D3D/GL/Vulkan
      * sampler compare (RPCS3: get_compare_func(zfunc, reverse_direction=true)).
-     * Taken literally, Fall of Man's GEQUAL shadow test lit only the pixels
+     * Taken literally, the game's GEQUAL shadow test lit only the pixels
      * under a caster and darkened everything else in the projected area. */
     const char* cmp[] = { "0.0", "reference > depth", "reference == depth",
         "reference >= depth", "reference < depth", "reference != depth",
@@ -1366,7 +1366,7 @@ static int rsx_fp_decompile_internal(
     /* v125: the RSX window position. rsx_shscale.z = 1 when the guest's
      * SHADER_WINDOW origin is the bottom edge, .w = the window height (the
      * D3D12 backend writes both per draw; other backends leave them 0 = no
-     * flip). Fall of Man's ground fog and soft particles index the depth
+     * flip). The game's ground fog and soft particles index the depth
      * buffer with (2x, 720 - y): unflipped they read the mirrored row. */
     const int uses_wpos = strstr(o.p, "_rsx_wpos(") != NULL;
     if (uses_wpos) {
@@ -1495,7 +1495,7 @@ static int rsx_fp_decompile_internal(
 /* Resistance port: the unbuffered (inline-constant) form with per-unit sign
  * expansion, for the D3D12 backend -- it used the plain entry point, so a
  * texture bound UNSIGNED_REMAP_BIASED was never re-centred and every such
- * fetch read +0.5 too bright (Fall of Man's carbine came out washed white). */
+ * fetch read +0.5 too bright (the game's carbine came out washed white). */
 int rsx_fp_decompile_expand_ex(const u8* ucode, u32 max_bytes, u32 ctrl,
                                u32 tex_cube_mask, const u8 expand_masks[16],
                                char* out, u32 out_size)

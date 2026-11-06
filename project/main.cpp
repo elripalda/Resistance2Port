@@ -560,7 +560,7 @@ int main(int argc, char** argv)
     derive_vfs_root(argv[1]);
     printf("[boot] VFS root: %s\n", ppu_vfs_root);
 
-    /* Resistance port: real title id (BCUS98107) from PARAM.SFO, not BLES00000 */
+    /* Resistance port: real title id (BCES00226) from PARAM.SFO, not BLES00000 */
     {
         char sfo[1100];
         snprintf(sfo, sizeof sfo, "%s/PS3_GAME/PARAM.SFO", ppu_vfs_root);

@@ -27,7 +27,7 @@
 extern "C" {
 #endif
 
-/* lv2's pool is far larger than 256. Resistance: Fall of Man has 256
+/* lv2's pool is far larger than 256. The game has 256
  * mutexes alive by its first intro movie (456 created, 200 destroyed),
  * so the next sys_mutex_create returned EAGAIN and the movie player
  * failed every start. 8192 keeps a wide margin at ~100 bytes a slot. */

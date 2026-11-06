@@ -14,7 +14,7 @@ import argparse, glob, json, os, re, shutil, struct, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from rfom_regen import run, ppu, fix_includes, spu_post   # shared with the Fall of Man pipeline
+from regen_common import run, ppu, fix_includes, spu_post
 
 # Resistance 2 (BCES00226 v1.00) layout of the SPU data section
 PM = dict(off=0xCE9680, size=0x3100, base=0xA00, entry=0xA00)

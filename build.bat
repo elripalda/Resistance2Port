@@ -19,7 +19,7 @@ if errorlevel 1 (echo Could not set up the Visual Studio build tools. & goto fai
 set "PATH=C:\Program Files\LLVM\bin;C:\Program Files\CMake\bin;%LOCALAPPDATA%\Microsoft\WinGet\Links;%PATH%"
 set "FFOPT=-DPS3RECOMP_FFMPEG_RUNTIME=ON -DPS3RECOMP_FFMPEG_INCLUDE_DIR=%~dp0ffmpeg\include"
 set "PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
-if not defined RFOM_JOBS set "RFOM_JOBS=4"
+if not defined PORT_JOBS set "PORT_JOBS=4"
 
 echo Building the RPCS3 RSX core...
 cmake -S ps3recomp\third_party\rpcs3 -B build_rpcs3 -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DRPCS3_RSX_BUILD_LINKTEST=OFF > logs\configure_rpcs3.log 2>&1
@@ -29,11 +29,11 @@ if errorlevel 1 (echo RPCS3 RSX build FAILED - see logs\build_rpcs3.log & goto f
 
 (
   echo Configuring...
-  cmake -S project -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DPORT_NAME=Resistance2 -DPS3RECOMP_DIR="%~dp0ps3recomp" -DRECOMP_DIR="%~dp0recompiled" -DRFOM_SPU_AVX2=ON %FFOPT% > logs\configure.log 2>&1
+  cmake -S project -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DPORT_NAME=Resistance2 -DPS3RECOMP_DIR="%~dp0ps3recomp" -DRECOMP_DIR="%~dp0recompiled" -DPORT_SPU_AVX2=ON %FFOPT% > logs\configure.log 2>&1
   if errorlevel 1 (echo Configure FAILED - see logs\configure.log & type logs\configure.log & goto fail)
 )
 echo Building the game...
-"%PS%" -NoProfile -Command "cmake --build build -j %RFOM_JOBS% 2>&1 | Tee-Object -FilePath logs\build.log; $c = $LASTEXITCODE; if (Select-String -Path logs\build.log -Pattern '^FAILED: |^ninja: build stopped' -Quiet) { $c = 1 }; exit $c"
+"%PS%" -NoProfile -Command "cmake --build build -j %PORT_JOBS% 2>&1 | Tee-Object -FilePath logs\build.log; $c = $LASTEXITCODE; if (Select-String -Path logs\build.log -Pattern '^FAILED: |^ninja: build stopped' -Quiet) { $c = 1 }; exit $c"
 if errorlevel 1 (echo. & echo BUILD FAILED - see logs\build.log & goto fail)
 
 

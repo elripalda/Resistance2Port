@@ -1,6 +1,6 @@
 // r2_dlss.dll: the only part of the Resistance 2 port that uses the NVIDIA DLSS (NGX) SDK, Vulkan flavour.
 // The RPCS3 Vulkan renderer loads it at run time (RSX_FSR=2, VKR2Upscaler.cpp); without it, or on a
-// non-RTX GPU, it falls back to FSR 3.1. Same split as rfom_dlss.dll in the Fall of Man port (D3D12 there).
+// non-RTX GPU, it falls back to FSR 3.1.
 // Built by build.bat: clang-cl /MT /LD r2_dlss.cpp tools\dlss\lib\nvsdk_ngx_s.lib
 
 #define WIN32_LEAN_AND_MEAN

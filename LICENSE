@@ -5,7 +5,7 @@ Copyright (c) 2026 the Resistance 2 PC port contributors
 This licence covers the port's own code (project/, tools/, the scripts and the
 changes made to ps3recomp/). ps3recomp/ keeps its own MIT licence
 (ps3recomp/LICENSE); tools/ffx_bin/ is AMD's (tools/ffx_bin/LICENSE.txt).
-It grants nothing in Resistance: Fall of Man, which belongs to Sony
+It grants nothing in Resistance 2, which belongs to Sony
 Interactive Entertainment; no part of the game is included.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

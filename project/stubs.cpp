@@ -32,7 +32,7 @@
 /* ---------------------------------------------------------------------------
  * Resistance port: sys_game_process_exitspawn
  *
- * Fall of Man is two programs: EBOOT.BIN (front end / menus) exitspawns
+ * The game is two programs: EBOOT.BIN (front end / menus) exitspawns
  * /dev_bdvd/PS3_GAME/USRDIR/game.self to start a level, and game.self can
  * exitspawn back. Each is lifted into its own executable, so exitspawn starts
  * the other executable with the new process's argv/envp/data (handed over
@@ -99,7 +99,7 @@ static void hle_game_process_exitspawn(ppu_context* ctx)
     char exe[MAX_PATH]; GetModuleFileNameA(NULL, exe, MAX_PATH);
     std::string root(exe);
     root = root.substr(0, root.find_last_of("\\/"));      /* ...\build or ...\build_game */
-    root = root.substr(0, root.find_last_of("\\/"));      /* ...\ResistancePort          */
+    root = root.substr(0, root.find_last_of("\\/"));      /* ...\Resistance2Port         */
     std::string lower = path; for (auto& c : lower) c = (char)tolower((unsigned char)c);
     std::string target_exe, target_elf;
     /* Resistance 2: EBOOT.BIN and game.self are the same program */
@@ -183,7 +183,7 @@ static void hle_game_process_exitspawn(ppu_context* ctx)
  * game running; that frame's physics results are dropped. PHYS_ABANDON=0
  * restores the original wait. */
 extern "C" void spu_phys_trace_dump(const char* path);
-extern "C" int rfom_phys_abandon(const char* where)
+extern "C" int port_phys_abandon(const char* where)
 {
     static int en = -1;
     if (en < 0) { const char* e = getenv("PHYS_ABANDON"); en = e ? atoi(e) : 1; }
@@ -218,7 +218,7 @@ extern "C" void spu_phys_trace_raw(uint32_t spu, uint32_t cmd, uint32_t lsa, uin
 extern "C" int  spu_coh_is_reserved(uint32_t addr);
 extern "C" void spu_lockline_lock(void);
 extern "C" void spu_lockline_unlock(void);
-extern "C" void rfom_joblist_reset(uint32_t list)
+extern "C" void port_joblist_reset(uint32_t list)
 {
     static int en = -1;
     if (en < 0) { const char* e = getenv("JOBLIST_ATOMIC"); en = e ? atoi(e) : 1;
@@ -249,8 +249,8 @@ extern "C" void rfom_joblist_reset(uint32_t list)
  * poll a command job's status word). Recorded as SYSCALL spans with
  * a = 0x20000 | (tag & 0xFFFF), b = tag. */
 #include "ps3emu/ps3_ftrace.h"
-extern "C" unsigned long long rfom_ftw_now(void) { return PS3_FT_ON() ? ps3_ft_now() : 0ull; }
-extern "C" void rfom_ftw_span(unsigned tag, unsigned long long t0, ppu_context* ctx)
+extern "C" unsigned long long port_ftw_now(void) { return PS3_FT_ON() ? ps3_ft_now() : 0ull; }
+extern "C" void port_ftw_span(unsigned tag, unsigned long long t0, ppu_context* ctx)
 {
     if (!t0 || !PS3_FT_ON()) return;
     ps3_ft_span(PS3_FT_SYSCALL, (uint32_t)ctx->thread_id, 0x20000u | (tag & 0xFFFFu), tag, t0, ps3_ft_now());
@@ -258,14 +258,14 @@ extern "C" void rfom_ftw_span(unsigned tag, unsigned long long t0, ppu_context* 
 
 /* Resistance port: func_001C821C starts an SPU job list and polls it for
  * completion with no timeout -- every recent York freeze sits there with the
- * SPUs idle. rfom_jobwait_begin() marks the start of a wait; each poll that
- * reports "not done" calls rfom_jobwait_spin(obj). After 3 s it dumps the job
+ * SPUs idle. port_jobwait_begin() marks the start of a wait; each poll that
+ * reports "not done" calls port_jobwait_spin(obj). After 3 s it dumps the job
  * list (header, per-SPU counters, entries) once; with JOBWAIT_ABANDON=<sec> it
  * reports the list done after that long (default 0 = keep waiting). */
 static thread_local unsigned long long s_jw_t0 = 0;
 static thread_local int s_jw_dumped = 0;
-extern "C" void rfom_jobwait_begin(void) { s_jw_t0 = GetTickCount64(); s_jw_dumped = 0; }
-extern "C" int rfom_jobwait_spin(uint32_t obj)
+extern "C" void port_jobwait_begin(void) { s_jw_t0 = GetTickCount64(); s_jw_dumped = 0; }
+extern "C" int port_jobwait_spin(uint32_t obj)
 {
     const unsigned long long now = GetTickCount64();
     if (!s_jw_t0) s_jw_t0 = now;
@@ -310,12 +310,12 @@ extern "C" int rfom_jobwait_spin(uint32_t obj)
 }
 /* Resistance port: func_000508A8 waits for an SPU job to set bit 0x2 of a
  * status word, warning once a second and never giving up. When the job is lost
- * the game froze there with every SPU idle. rfom_flagwait_begin() at entry;
- * rfom_flagwait_timeout() on each 1 s warning returns 1 after FLAGWAIT_ABANDON
+ * the game froze there with every SPU idle. port_flagwait_begin() at entry;
+ * port_flagwait_timeout() on each 1 s warning returns 1 after FLAGWAIT_ABANDON
  * seconds (default 3, 0 = wait forever) and the wait is treated as done. */
 static thread_local int s_fw_n = 0;
-extern "C" void rfom_flagwait_begin(void) { s_fw_n = 0; }
-extern "C" int rfom_flagwait_timeout(const char* where)
+extern "C" void port_flagwait_begin(void) { s_fw_n = 0; }
+extern "C" int port_flagwait_timeout(const char* where)
 {
     static int lim = -1;
     if (lim < 0) { const char* e = getenv("FLAGWAIT_ABANDON"); lim = e ? atoi(e) : 3; }
@@ -340,12 +340,12 @@ extern "C" int rfom_flagwait_timeout(const char* where)
  * the pace: 0.9 x 1/30 = 30 ms -- 33 fps with 1/30 steps, the game running
  * 10% fast.
  *
- * RFOM_FPS=<n> (default 60): min step = 1/n and the limiter waits the full
+ * PORT_FPS=<n> (default 60): min step = 1/n and the limiter waits the full
  * step, precisely (host wait, not 500 us spins). The game's max stays (1/30 in
  * gameplay), so the step is the real frame time anywhere between n and 30 fps
- * and the game runs at real speed. RFOM_FPS=30 is the original 30 fps without
- * the 10% overspeed. RFOM_FPS=0 = uncapped (240). RFOM_FPS=orig = untouched.
- * RFOM_DT_MAX=<s> raises the max step (e.g. 0.05: real speed down to 20 fps;
+ * and the game runs at real speed. PORT_FPS=30 is the original 30 fps without
+ * the 10% overspeed. PORT_FPS=0 = uncapped (240). PORT_FPS=orig = untouched.
+ * PORT_DT_MAX=<s> raises the max step (e.g. 0.05: real speed down to 20 fps;
  * the game itself slows down below 30 fps otherwise, as on the PS3).
  * Above 60 the PPU-side cellGcmSetWaitFlip would hold every frame for the
  * 60 Hz flip beat, so it stops blocking there.
@@ -356,18 +356,18 @@ extern "C" void cellGcm_set_waitflip_block(int on);
 static volatile int s_rf_mode = -2;    /* -2 unset, -1 original, else the fps target */
 static float s_rf_min = 1.0f / 60.0f;  /* min step (s) */
 static float s_rf_max = 0.0f;          /* max step floor (s), 0 = the game's own */
-static void rfom_fps_init(void)
+static void port_fps_init(void)
 {
     if (s_rf_mode != -2) return;
     int m = 60;
-    const char* e = getenv("RFOM_FPS");
+    const char* e = getenv("PORT_FPS");
     if (e && *e) {
         if (!_stricmp(e, "orig") || !_stricmp(e, "original") || !_stricmp(e, "off")) m = -1;
         else { m = atoi(e); if (m <= 0) m = 240; }
     }
     if (m > 0 && m < 30) m = 30;
     if (m > 1000) m = 1000;
-    const char* x = getenv("RFOM_DT_MAX");
+    const char* x = getenv("PORT_DT_MAX");
     float mx = x ? (float)atof(x) : 0.0f;
     if (mx < 0.0f) mx = 0.0f;
     if (mx > 0.1f) mx = 0.1f;
@@ -375,50 +375,50 @@ static void rfom_fps_init(void)
     s_rf_max = mx;
     if (m > 60) cellGcm_set_waitflip_block(0);
     s_rf_mode = m;
-    if (m < 0) fprintf(stderr, "[fps] RFOM_FPS=orig: the game's own pacing (33 fps, 1/30 steps)\n");
+    if (m < 0) fprintf(stderr, "[fps] PORT_FPS=orig: the game's own pacing (33 fps, 1/30 steps)\n");
     else fprintf(stderr, "[fps] target %d fps: min step %.5f s, max step %s%s\n", m, (double)s_rf_min,
                  mx > 0.0f ? "raised to " : "the game's", mx > 0.0f ? x : "");
 }
 /* v170: scripted player sequences (a chapter's opening walk: input locked,
  * the game walks and turns the player) are timed in frames, and at high frame
  * rates they ended after a fraction of the walk. While one runs (player byte
- * +0x3F07 == 1, set by rfom_mouselook_pre) the game keeps its own 1/30 step,
- * i.e. the original 30 fps; full rate returns with control. RFOM_SCRIPT30=0 off. */
-static volatile int g_rfom_scripted;
-extern "C" volatile unsigned long long g_rfom_play_ms;
-extern "C" double rfom_dt_min(uint32_t bits)
+ * +0x3F07 == 1, set by port_mouselook_pre) the game keeps its own 1/30 step,
+ * i.e. the original 30 fps; full rate returns with control. PORT_SCRIPT30=0 off. */
+static volatile int g_port_scripted;
+extern "C" volatile unsigned long long g_port_play_ms;
+extern "C" double port_dt_min(uint32_t bits)
 {
-    rfom_fps_init();
+    port_fps_init();
     float v; memcpy(&v, &bits, 4);
     if (s_rf_mode < 0 || !(v > 0.0f)) return (double)v;
-    if (g_rfom_scripted) return (double)v;
+    if (g_port_scripted) return (double)v;
     /* v174: menus over the game (pause, options) at 60 fps. At 165 the pause
      * menu's full-screen dimming layer was left out of some frames (the game's
      * menu code skips it now and then at high rates): a visible flicker every
      * few seconds. The look code not running for 200 ms = a menu is up. */
-    /* RFOM_MENU_FPS=<n> (default 90; 0 = off) */
-    { static int en = -1; if (en < 0) { const char* e = getenv("RFOM_MENU_FPS"); en = e ? atoi(e) : 90; }
-      if (en > 0 && g_rfom_play_ms && GetTickCount64() - g_rfom_play_ms > 200) {
+    /* PORT_MENU_FPS=<n> (default 90; 0 = off) */
+    { static int en = -1; if (en < 0) { const char* e = getenv("PORT_MENU_FPS"); en = e ? atoi(e) : 90; }
+      if (en > 0 && g_port_play_ms && GetTickCount64() - g_port_play_ms > 200) {
           const float m = 1.0f / (float)en; return (double)(s_rf_min > m ? s_rf_min : (m < v ? m : v)); } }
     return (double)(s_rf_min < v ? s_rf_min : v);
 }
-extern "C" double rfom_dt_max(uint32_t bits)
+extern "C" double port_dt_max(uint32_t bits)
 {
-    rfom_fps_init();
+    port_fps_init();
     float v; memcpy(&v, &bits, 4);
     if (s_rf_mode < 0 || !(v > 0.0f)) return (double)v;
     return (double)(s_rf_max > v ? s_rf_max : v);
 }
-extern "C" double rfom_limit_factor(double f)
+extern "C" double port_limit_factor(double f)
 {
-    rfom_fps_init();
+    port_fps_init();
     return s_rf_mode < 0 ? f : 1.0;
 }
 /* The limiter's wait: until `target` timebase ticks have passed since the
  * previous flip's stamp (u64 at last_ea). 0 = run the game's own loop. */
-extern "C" int rfom_frame_wait(uint64_t target, uint32_t last_ea)
+extern "C" int port_frame_wait(uint64_t target, uint32_t last_ea)
 {
-    rfom_fps_init();
+    port_fps_init();
     if (s_rf_mode < 0) return 0;
     const uint64_t last = vm_read64(last_ea);
     for (;;) {
@@ -454,24 +454,24 @@ extern "C" int rfom_frame_wait(uint64_t target, uint32_t last_ea)
  * play-next-item path, stops the components and joins AudioDisplay -- which
  * nothing ever signals: black screen, joined forever. A bounded wait returns
  * to the component's step loop, which sees the stop request and exits; while
- * nothing stops it, it simply waits again. RFOM_MOVIE_EVWAIT_MS=<ms> (default
+ * nothing stops it, it simply waits again. PORT_MOVIE_EVWAIT_MS=<ms> (default
  * 100), 0 = the original unbounded wait. */
 /* Resistance port (v134): field of view. The camera setter func_000B674C
  * takes the horizontal FOV in degrees (82 = the game's gameplay view, ~65 =
  * carbine zoom, ~27 = sniper scope) and derives the projection, the vertical
  * FOV (from the aspect) and the culling frustum from it, so widening it here
- * widens everything consistently. RFOM_FOV=<degrees> sets the gameplay FOV;
+ * widens everything consistently. PORT_FOV=<degrees> sets the gameplay FOV;
  * the widening tapers off below 82 so zoomed views keep their zoom and the
  * zoom-in animation stays smooth. 0 / unset = the original. */
 #include <cmath>
-static volatile double g_rfom_game_fov = 82.0;   /* last FOV the game set (degrees, before widening) */
-extern "C" volatile double g_rfom_view_fov;   /* v190e: cellPad.c scope mode reads the player's FOV */
-extern "C" double rfom_fov_adjust(double f)
+static volatile double g_port_game_fov = 82.0;   /* last FOV the game set (degrees, before widening) */
+extern "C" volatile double g_port_view_fov;   /* v190e: cellPad.c scope mode reads the player's FOV */
+extern "C" double port_fov_adjust(double f)
 {
     static double k = -1.0;
     const double base = 82.0, zoom = 65.0, d2r = 3.14159265358979323846 / 180.0;
     if (k < 0.0) {
-        const char* e = getenv("RFOM_FOV");
+        const char* e = getenv("PORT_FOV");
         const double u = e ? atof(e) : 0.0;
         if (u >= 30.0 && u <= 160.0 && fabs(u - base) > 0.01) {
             k = tan(u * 0.5 * d2r) / tan(base * 0.5 * d2r);
@@ -492,29 +492,29 @@ extern "C" double rfom_fov_adjust(double f)
  * player's in some places, so looking that way cut the mouse speed as if
  * zoomed ("a whole direction slows the mouse down"). Only the player's view
  * camera counts now: the camera object that is given the plain gameplay FOV
- * (82) -- re-learned whenever one is. RFOM_FOV_ANYCAM=1 = old. */
-static volatile uint32_t s_rfom_view_cam = 0;
-extern "C" void rfom_fov_note(uint32_t cam, double f)
+ * (82) -- re-learned whenever one is. PORT_FOV_ANYCAM=1 = old. */
+static volatile uint32_t s_port_view_cam = 0;
+extern "C" void port_fov_note(uint32_t cam, double f)
 {
     if (!(f > 1.0 && f < 179.0)) return;
-    static int any = -1; if (any < 0) any = getenv("RFOM_FOV_ANYCAM") ? 1 : 0;
-    if (fabs(f - 82.0) < 0.01) s_rfom_view_cam = cam;
+    static int any = -1; if (any < 0) any = getenv("PORT_FOV_ANYCAM") ? 1 : 0;
+    if (fabs(f - 82.0) < 0.01) s_port_view_cam = cam;
     { static uint32_t seen[32]; static int ns = 0; int k = 0;   /* diag: distinct cameras */
       for (; k < ns; k++) if (seen[k] == cam) break;
       if (k == ns && ns < 32 && r2_diag()) { seen[ns++] = cam;
           FILE* fl = fopen("logs\\cameras.txt", ns == 1 ? "w" : "a");
           if (fl) { fprintf(fl, "camera 0x%08X first fov %.2f\n", cam, f); fclose(fl); } } }
-    if (any || cam == s_rfom_view_cam || !s_rfom_view_cam) { g_rfom_game_fov = f; g_rfom_view_fov = f; }
+    if (any || cam == s_port_view_cam || !s_port_view_cam) { g_port_game_fov = f; g_port_view_fov = f; }
 }
 /* The camera's +0x10 / +0x14 (horizontal / vertical FOV, radians) drive the
  * game's level-of-detail choice, not the projection: widened, distant models
  * looked smaller and switched to far LODs (York's hex windows turned into a
  * glowing blue proxy). After the setter runs, put them back to the values the
  * UNwidened FOV gives; the projection and frustum keep the wide view. */
-extern "C" void rfom_fov_lod_fix(uint32_t cam, double f, double aspect)
+extern "C" void port_fov_lod_fix(uint32_t cam, double f, double aspect)
 {
     if (!cam || !(aspect > 0.1)) return;
-    if (fabs(rfom_fov_adjust(f) - f) < 1e-9) return;   /* not widened */
+    if (fabs(port_fov_adjust(f) - f) < 1e-9) return;   /* not widened */
     const double d2r = 3.14159265358979323846 / 180.0;
     const double t = tan(f * 0.5 * d2r);
     const float h = (float)(f * d2r), v = (float)(2.0 * atan(t / aspect));
@@ -530,11 +530,11 @@ extern "C" void rfom_fov_lod_fix(uint32_t cam, double f, double aspect)
  * "2ch_90". The two run on different threads; when the sound setup won the
  * race it read the initial 2 and the whole session mixed in the 2ch layout
  * (only L/R, quieter, positions wrong). Return the configured layout either
- * way. RFOM_SPEAKERS=6 (default) / 8 / 2 (= the game's stereo layout always). */
-extern "C" uint32_t rfom_speakers(uint32_t v)
+ * way. PORT_SPEAKERS=6 (default) / 8 / 2 (= the game's stereo layout always). */
+extern "C" uint32_t port_speakers(uint32_t v)
 {
     static int sp = -1;
-    if (sp < 0) { const char* e = getenv("RFOM_SPEAKERS"); sp = e ? atoi(e) : 6;
+    if (sp < 0) { const char* e = getenv("PORT_SPEAKERS"); sp = e ? atoi(e) : 6;
                   if (sp != 2 && sp != 6 && sp != 8) sp = 6; }
     if (sp == 2) return 2;
     if (v == 2) {
@@ -549,7 +549,7 @@ extern "C" uint32_t rfom_speakers(uint32_t v)
  * logs\sndsetup.txt (appended, one block per launch): audio-out setup
  * (D2FFC), sound setup (D37B0), the speaker-count getter's raw value, the
  * SCREAM bus count (515E4C) and every speaker layout the game selects
- * (51E738, with its name). rfom_snd_mode adds the layout in use each time the
+ * (51E738, with its name). port_snd_mode adds the layout in use each time the
  * 10 s channel monitor runs. */
 static uint32_t s_snd_slot = 0;
 static void snd_layout_name(uint32_t elem, char* out, int n)
@@ -577,7 +577,7 @@ static void snd_log(const char* line)
             (unsigned long long)GetTickCount64(), (unsigned long)GetCurrentThreadId(), line);
     fclose(f);
 }
-extern "C" void rfom_snd_note(int kind, uint32_t v, uint32_t lr, uint32_t extra)
+extern "C" void port_snd_note(int kind, uint32_t v, uint32_t lr, uint32_t extra)
 {
     static volatile LONG cnt[8];
     if (kind == 2) s_snd_slot = extra;
@@ -589,7 +589,7 @@ extern "C" void rfom_snd_note(int kind, uint32_t v, uint32_t lr, uint32_t extra)
     snprintf(line, sizeof line, "%s v=0x%X lr=0x%X %s", kn[kind & 7], v, lr, nm);
     snd_log(line);
 }
-extern "C" void rfom_snd_mode(int surround, double c_pct, double nan_pct)
+extern "C" void port_snd_mode(int surround, double c_pct, double nan_pct)
 {
     static int n = 0, last = -1;
     if (n >= 40 && surround == last) return;
@@ -609,14 +609,14 @@ extern "C" void rfom_snd_mode(int surround, double c_pct, double nan_pct)
  * function and exited the process. That is the main menu's Location Select:
  * a script error there (handled on a PS3) closed the game every time.
  * Now each lifted setjmp call site does a HOST setjmp in its own frame
- * (rfom_jb_arm registers it under the guest buffer address), and the lifted
+ * (port_jb_arm registers it under the guest buffer address), and the lifted
  * longjmp, after restoring the guest registers, host-longjmps to it. Entries
  * are per thread; a new setjmp drops entries from frames at or below its
  * guest stack pointer (frames that have returned). */
 #include <setjmp.h>
 namespace {
-struct RfomJb { uint32_t ea, sp; int depth, vsp; jmp_buf env; };
-thread_local RfomJb t_jb[64];
+struct PortJb { uint32_t ea, sp; int depth, vsp; jmp_buf env; };
+thread_local PortJb t_jb[64];
 thread_local int t_jb_n = 0;
 thread_local int t_jb_land = -1;   /* entry being landed on */
 }
@@ -625,20 +625,20 @@ thread_local int t_jb_land = -1;   /* entry being landed on */
  * the setjmp. */
 extern "C" int* ps3_ppu_dispatch_depth_slot(void);
 extern "C" int* ps3_ppu_vcall_sp_slot(void);
-extern "C" jmp_buf* rfom_jb_arm(ppu_context* ctx)
+extern "C" jmp_buf* port_jb_arm(ppu_context* ctx)
 {
     const uint32_t ea = ((uint32_t)ctx->gpr[3] + 15u) & ~15u;
     const uint32_t sp = (uint32_t)ctx->gpr[1];
     while (t_jb_n > 0 && t_jb[t_jb_n - 1].sp <= sp) t_jb_n--;
     if (t_jb_n >= 64) {   /* cannot happen with sane nesting; keep the newest */
-        memmove(&t_jb[0], &t_jb[1], sizeof(RfomJb) * 63); t_jb_n = 63;
+        memmove(&t_jb[0], &t_jb[1], sizeof(PortJb) * 63); t_jb_n = 63;
     }
-    RfomJb* e = &t_jb[t_jb_n++];
+    PortJb* e = &t_jb[t_jb_n++];
     e->ea = ea; e->sp = sp;
     e->depth = *ps3_ppu_dispatch_depth_slot(); e->vsp = *ps3_ppu_vcall_sp_slot();
     return &e->env;
 }
-extern "C" void rfom_jb_landed(ppu_context* ctx)
+extern "C" void port_jb_landed(ppu_context* ctx)
 {
     if (t_jb_land >= 0 && t_jb_land < t_jb_n) {
         *ps3_ppu_dispatch_depth_slot() = t_jb[t_jb_land].depth;
@@ -650,7 +650,7 @@ extern "C" void rfom_jb_landed(ppu_context* ctx)
         fprintf(stderr, "[setjmp] guest longjmp landed (r3=%llu lr=0x%08llX sp=0x%08llX) -- script error handled%c",
                 (unsigned long long)ctx->gpr[3], (unsigned long long)ctx->lr, (unsigned long long)ctx->gpr[1], 10);
 }
-extern "C" void rfom_jb_jump(ppu_context* ctx, uint32_t buf_ea)
+extern "C" void port_jb_jump(ppu_context* ctx, uint32_t buf_ea)
 {
     for (int i = t_jb_n - 1; i >= 0; i--) {
         if (t_jb[i].ea != buf_ea) continue;
@@ -668,21 +668,21 @@ extern "C" void rfom_jb_jump(ppu_context* ctx, uint32_t buf_ea)
  * The player look code func_002A4D14 turns the right stick into rates,
  * player+976 (pitch) and +980 (yaw), and integrates them at 0x2A5060..0x2A50B8
  * into pitch (+864, clamped afterwards) and yaw (+868, wrapped).
- *  rfom_mouselook_pre (0x2A5060, before the integration): checks the turn
+ *  port_mouselook_pre (0x2A5060, before the integration): checks the turn
  *    direction the game derived from the stick the mouse emulation fed it --
  *    that is how the game's own invert setting is followed -- and zeroes the
  *    two rates, so the stick no longer turns the view.
- *  rfom_mouselook (0x2A50B8, after it, before the clamps): adds the mouse
+ *  port_mouselook (0x2A50B8, after it, before the clamps): adds the mouse
  *    counts since the last frame to yaw and pitch.
  * The directions start from mouselook.cfg (written whenever they change;
  * defaults: the ones measured on this setup) and follow the game if it ever
  * disagrees for 15 frames running, e.g. after flipping invert in the options.
- * The game's controller sensitivity (0-9) scales it too (rfom_ml_game_sens). */
+ * The game's controller sensitivity (0-9) scales it too (port_ml_game_sens). */
 extern "C" volatile long g_ml_mode, g_kbm_ml_dx, g_kbm_ml_dy;
 extern "C" volatile double g_ml_deg_per_count;
 extern "C" volatile int g_ml_invert_y, g_ml_fed_rx, g_ml_fed_ry, g_kbm_capture, g_ml_rs_keys;
 extern "C" volatile ULONGLONG g_ml_kbm_ms;
-extern "C" volatile uint32_t g_rfom_opts_ea;
+extern "C" volatile uint32_t g_port_opts_ea;
 /* v151: is the right stick the mouse right now? (not a controller, not the look keys) */
 static int ml_stick_is_mouse(void) { return !g_ml_rs_keys && GetTickCount64() - g_ml_kbm_ms < 200; }
 static float ml_rdf(uint32_t a) { uint32_t w = vm_read32(a); float f; memcpy(&f, &w, 4); return f; }
@@ -736,16 +736,16 @@ static void ml_opts_watch(uint32_t player)
     }
     memcpy(last, cur, sizeof last); have = 1;
 }
-extern "C" volatile unsigned long long g_rfom_play_ms;
-extern "C" volatile int g_rfom_pause_ui;
-extern "C" volatile int g_rfom_space_start;
+extern "C" volatile unsigned long long g_port_play_ms;
+extern "C" volatile int g_port_pause_ui;
+extern "C" volatile int g_port_space_start;
 /* ---------------------------------------------------------------------------
  * Resistance port (v168): falling-through-the-floor detector + rescue key.
- * Player object (the pointer rfom_mouselook gets), found from a 30 s trace:
+ * Player object (the pointer port_mouselook gets), found from a 30 s trace:
  *   +0x3E80/84/88  feet position x, height, y      (+0x340.. = eye, 1.7 above)
  *   +0xF0/F4/F8    velocity (copy at +0x110)        +0x1EB  1 = on the ground
  * The detector keeps the last 3 s of the player object; when the player drops
- * more than RFOM_FALL_M (default 6) below the last ground they stood on within
+ * more than PORT_FALL_M (default 6) below the last ground they stood on within
  * 3 s of leaving it, it writes logs\fall_<ms>.bin (same format as
  * player_trace.bin) and a line in the log. F4 puts the player back on the
  * last ground they stood on for at least half a second (about 1.5 s before
@@ -761,7 +761,7 @@ static void fall_watch(uint32_t player)
 {
     if (!player) return;
     static int on = -1; static float lim = 6.0f;
-    if (on < 0) { const char* e = getenv("RFOM_FALL_M"); lim = e ? (float)atof(e) : 6.0f; on = lim > 0.0f; }
+    if (on < 0) { const char* e = getenv("PORT_FALL_M"); lim = e ? (float)atof(e) : 6.0f; on = lim > 0.0f; }
     const ULONGLONG now = GetTickCount64();
     const float fx = ml_rdf(player + 0x3E80), fz = ml_rdf(player + 0x3E84), fy = ml_rdf(player + 0x3E88);
     const int ground = vm_read8(player + 0x1EB) == 1;
@@ -773,12 +773,12 @@ static void fall_watch(uint32_t player)
      * vertical jump of more than 8 m between consecutive frames with under
      * 1.5 m of horizontal motion puts feet + eye back where they were and
      * zeroes vertical speed. Gives up after 20 frames in a row (a real
-     * teleport). RFOM_SNAP_GUARD=0 off. */
+     * teleport). PORT_SNAP_GUARD=0 off. */
     {
-        static int sg = -1; if (sg < 0) { const char* e = getenv("RFOM_SNAP_GUARD"); sg = e ? atoi(e) : 1; }
+        static int sg = -1; if (sg < 0) { const char* e = getenv("PORT_SNAP_GUARD"); sg = e ? atoi(e) : 1; }
         static float px, pz, py, pex, pez, pey; static ULONGLONG pt = 0; static int streak = 0; static unsigned nlog = 0;
         const float ex = ml_rdf(player + 0x340), ez = ml_rdf(player + 0x344), ey = ml_rdf(player + 0x348);
-        if (sg && pt && now - pt < 200 && !g_rfom_scripted && streak < 20 &&
+        if (sg && pt && now - pt < 200 && !g_port_scripted && streak < 20 &&
             fabsf(fz - pz) > 8.0f && fabsf(fx - px) < 1.5f && fabsf(fy - py) < 1.5f) {
             streak++;
             ml_wrf(player + 0x3E80, px); ml_wrf(player + 0x3E84, pz); ml_wrf(player + 0x3E88, py);
@@ -855,16 +855,16 @@ static DWORD WINAPI ptrace_key_thread(LPVOID) {
 }
 static int s_ptrace_key_init = (CloseHandle(CreateThread(NULL, 0, ptrace_key_thread, NULL, 0, NULL)), 0);
 static ULONGLONG s_ml_script_until;   /* v169: scripted camera active until (ms) */
-extern "C" void rfom_mouselook_pre(uint32_t player)
+extern "C" void port_mouselook_pre(uint32_t player)
 {
     fall_watch(player);   /* v168 */
-    { static int en = -1; if (en < 0) { const char* e = getenv("RFOM_SCRIPT30"); en = e ? atoi(e) : 1; }
+    { static int en = -1; if (en < 0) { const char* e = getenv("PORT_SCRIPT30"); en = e ? atoi(e) : 1; }
       const int sc = en && player && vm_read8(player + 0x3F07) == 1;
-      if (sc != g_rfom_scripted) { g_rfom_scripted = sc; static int n = 0;
+      if (sc != g_port_scripted) { g_port_scripted = sc; static int n = 0;
           if (n++ < 40) fprintf(stderr, "[script] player sequence %s%s\n", sc ? "started: 30 fps pacing" : "ended: full frame rate", ""); } }
-    g_rfom_space_start = 0;   /* v160v: in play */
-    g_rfom_play_ms = GetTickCount64();   /* v162: in-game menu mode is off while this is fresh */
-    g_rfom_pause_ui = 0;
+    g_port_space_start = 0;   /* v160v: in play */
+    g_port_play_ms = GetTickCount64();   /* v162: in-game menu mode is off while this is fresh */
+    g_port_pause_ui = 0;
     /* v167 diag: Shift+F10 records the player object (first 16 KB, every frame,
      * 30 s) to logs\\player_trace.bin, to find where position / velocity live.
      * Record: u64 ms, u32 player ea, u32 0, then 16384 bytes big-endian as in memory. */
@@ -897,8 +897,8 @@ extern "C" void rfom_mouselook_pre(uint32_t player)
       } }
     /* v162f: gore level. Options word [[[r2-0x77D0]-0x8000]+0x934+0x354]: 2 = full gore (blood),
        1 = reduced (set at boot from the console's license area, sysparam 0x0122). Log it, and
-       keep it at 2 (RFOM_GORE=0 leaves it alone). */
-    { static int force = -100; if (force == -100) { const char* e = getenv("RFOM_GORE"); force = e ? atoi(e) : 1; }
+       keep it at 2 (PORT_GORE=0 leaves it alone). */
+    { static int force = -100; if (force == -100) { const char* e = getenv("PORT_GORE"); force = e ? atoi(e) : 1; }
       static ULONGLONG lg = 0; const ULONGLONG t = GetTickCount64();
       const uint32_t tb = vm_read32(0x006BD648u - 0x77D0u); const uint32_t base = tb ? vm_read32(tb - 0x8000u) : 0;
       if (base) {
@@ -924,15 +924,15 @@ extern "C" void rfom_mouselook_pre(uint32_t player)
                   if (f) { fprintf(f, "t=%llu gore@0x%08X=%u area=%d%s word=%u mode=%u DIFFICULTY=%d (@0x%08X)\n", t, ea, g, (int)area,
                                    (force > 0 && g == 1) ? " -> 2" : (force < 0 && g == 2) ? " -> 1" : "", dw, db, (int)diff, pdf); fclose(f); } } }
           if (force > 0 && g == 1) vm_write32(ea, 2);
-          else if (force < 0 && g == 2) vm_write32(ea, 1);   /* v163e: RFOM_GORE=-1 = reduced gore (A/B test) */
+          else if (force < 0 && g == 2) vm_write32(ea, 1);   /* v163e: PORT_GORE=-1 = reduced gore (A/B test) */
       } }
     /* v164: dynamic difficulty. func_000108C0 eases the damage scalar d (0x10040654) the longer you
        spend in a section and the more you die: penalty (0x10179DB0, only ever grows, capped at 3) is
        subtracted from the difficulty's base d, floored at its minimum (Hard: base 8.5, min 7.0, max 11).
        The timers persist through Continue, so a long-tested section stays at the floor. From d the
        game derives 0x10040644 = 1.5^x, 0x10040648/0x1004064C = 0.667^x, 0x10040650 = 2^x, x = (d-5)/5.
-       Default keeps the original behaviour; RFOM_DYNDIFF=0 pins d to the selected difficulty's base. */
-    { static int dyn = -1; if (dyn < 0) { const char* e = getenv("RFOM_DYNDIFF"); dyn = (e && atoi(e) == 0) ? 0 : 1; }   /* v164b: original behaviour by default; RFOM_DYNDIFF=0 pins d */
+       Default keeps the original behaviour; PORT_DYNDIFF=0 pins d to the selected difficulty's base. */
+    { static int dyn = -1; if (dyn < 0) { const char* e = getenv("PORT_DYNDIFF"); dyn = (e && atoi(e) == 0) ? 0 : 1; }   /* v164b: original behaviour by default; PORT_DYNDIFF=0 pins d */
       const uint32_t diff = vm_read32(0x1033CB00u);
       if (!dyn && diff >= 1 && diff <= 4) {
           const float base = ml_rdf(0x1004052Cu + 56u * diff + 0xCu);   /* per-difficulty table, entry +0xC */
@@ -972,19 +972,19 @@ extern "C" void rfom_mouselook_pre(uint32_t player)
     ml_wrf(player + 976, 0.0f);
     ml_wrf(player + 980, 0.0f);
 }
-extern "C" void rfom_mouselook(uint32_t player)
+extern "C" void port_mouselook(uint32_t player)
 {
     if (!g_ml_mode || !player) return;
     ml_load();
     { const uint32_t c = vm_read32(player + 16016);
-      g_rfom_opts_ea = c ? vm_read32(c + 6848) : 0; }
+      g_port_opts_ea = c ? vm_read32(c + 6848) : 0; }
     const ULONGLONG now = GetTickCount64();
     long dx = InterlockedExchange(&g_kbm_ml_dx, 0), dy = InterlockedExchange(&g_kbm_ml_dy, 0);
     /* counts gathered while the look code was not running (menus, pause,
      * cutscenes, a vehicle) are dropped, not applied in one jump */
     if (now - s_ml_last > 150 || !g_kbm_capture || !ml_stick_is_mouse()) dx = dy = 0;
     if (now < s_ml_script_until) dx = dy = 0;   /* v169: scripted camera */
-    if (g_rfom_scripted || vm_read8(player + 0x3F07) == 1) dx = dy = 0;   /* v176: input-locked sequence (player +0x3F07) */
+    if (g_port_scripted || vm_read8(player + 0x3F07) == 1) dx = dy = 0;   /* v176: input-locked sequence (player +0x3F07) */
     s_ml_last = now;
     /* v150: the game's controller sensitivity (options 0-9, stored as
      * setting/9 at [[player+16016]+6848]+68) scales the mouse the way it
@@ -996,13 +996,13 @@ extern "C" void rfom_mouselook(uint32_t player)
       if (o) { float sv = ml_rdf(o + 68); if (sv == sv) { if (sv < 0) sv = 0; if (sv > 1) sv = 1; gs = 0.5 + sv; } } }
     /* v166: aiming down sights / scopes narrow the FOV; scale the mouse by the
      * same magnification (ratio of tan(fov/2), as displayed) so a mouse move
-     * covers the same part of the screen zoomed or not. RFOM_ZOOM_SENS=0 off,
+     * covers the same part of the screen zoomed or not. PORT_ZOOM_SENS=0 off,
      * or a 0..2 strength (1 = matched). */
-    { static double zs = -1.0; if (zs < 0.0) { const char* e = getenv("RFOM_ZOOM_SENS"); zs = e ? atof(e) : 1.0;
+    { static double zs = -1.0; if (zs < 0.0) { const char* e = getenv("PORT_ZOOM_SENS"); zs = e ? atof(e) : 1.0;
                                                if (zs < 0.0) zs = 0.0; if (zs > 2.0) zs = 2.0; }
-      const double f = g_rfom_game_fov, d2r = 3.14159265358979323846 / 180.0;
+      const double f = g_port_game_fov, d2r = 3.14159265358979323846 / 180.0;
       if (zs > 0.0 && f < 81.5 && f > 1.0) {
-          const double fa = rfom_fov_adjust(f), fb = rfom_fov_adjust(82.0);
+          const double fa = port_fov_adjust(f), fb = port_fov_adjust(82.0);
           const double r = tan(fa * 0.5 * d2r) / tan(fb * 0.5 * d2r);
           if (r > 0.0 && r < 1.0) gs *= pow(r, zs);
       } }
@@ -1274,11 +1274,11 @@ static inline uint32_t be32p(const uint8_t* q) { return (uint32_t)((q[0] << 24) 
 /* v160v: while a level loads and shows "Press the START button", Space also
  * presses Start (cellPad.c); cleared as soon as the player's look code runs,
  * so in play Space is only jump and never pauses. */
-extern "C" volatile int g_rfom_space_start;
-extern "C" void rfom_text_patch(uint32_t file_obj)
+extern "C" volatile int g_port_space_start;
+extern "C" void port_text_patch(uint32_t file_obj)
 {
     static int en = -1;
-    if (en < 0) { const char* e = getenv("RFOM_KEY_PROMPTS"); en = e ? atoi(e) : 1; }
+    if (en < 0) { const char* e = getenv("PORT_KEY_PROMPTS"); en = e ? atoi(e) : 1; }
     if (!en || !file_obj) return;
     int pad = 0;   /* controller: keep the PS3 icons, only reword the grapple line (v157) */
     { XINPUT_STATE xs; if (XInputGetState(0, &xs) == ERROR_SUCCESS) pad = 1; }
@@ -1307,7 +1307,7 @@ extern "C" void rfom_text_patch(uint32_t file_obj)
          * left click selects, Esc goes back. */
         { char mp[MAX_PATH] = ""; GetModuleFileNameA(NULL, mp, MAX_PATH);
           const char* b = strrchr(mp, '\\'); b = b ? b + 1 : mp;
-          if (!_stricmp(b, "ResistanceFoM.exe")) {
+          if (!_stricmp(b, "PortFrontEnd.exe")) {
               const int cx = 0x0A20 - 0x0A09, ci = 0x0A1F - 0x0A09;
               memcpy(s_rep3[cx], "Spc", 4); snprintf(s_repf[cx], 24, "[Space]"); s_have[cx] = 1;
               memcpy(s_rep3[ci], "Esc", 4); snprintf(s_repf[ci], 24, "[Esc]"); s_have[ci] = 1;
@@ -1322,7 +1322,7 @@ extern "C" void rfom_text_patch(uint32_t file_obj)
      *    among other words pointing at string starts (a string table). The game
      *    adds it to the base in 32 bits, so a wrapped offset still lands on the copy. */
     static int full = -1;
-    if (full < 0) { const char* e = getenv("RFOM_KEY_FULLNAMES"); full = e ? atoi(e) : 1; }
+    if (full < 0) { const char* e = getenv("PORT_KEY_FULLNAMES"); full = e ? atoi(e) : 1; }
     uint32_t nrefs = 0;
     std::vector<uint32_t> starts;                           /* strings to rewrite */
     std::vector<const char*> isgrab;   /* replacement text, or 0 (v160n) */
@@ -1337,13 +1337,13 @@ extern "C" void rfom_text_patch(uint32_t file_obj)
     const char* const kGrabText = pad ? "Rapidly move both sticks to break a Chimeran grapple."
                                       : "Shake the mouse to break a Chimeran grapple.";
     static int grab_en = -1;
-    if (grab_en < 0) { const char* e = getenv("RFOM_GRAB_PROMPT"); grab_en = e ? atoi(e) : 1; }
+    if (grab_en < 0) { const char* e = getenv("PORT_GRAB_PROMPT"); grab_en = e ? atoi(e) : 1; }
     /* v160n: front end: the button pictures next to BACK / SELECT are hidden
      * (rsx_d3d12_backend.c) and the words carry the key instead. */
     static int fe_menu = -1;
     if (fe_menu < 0) { char mp[MAX_PATH] = ""; GetModuleFileNameA(NULL, mp, MAX_PATH);
         const char* b = strrchr(mp, '\\'); b = b ? b + 1 : mp; const char* e = getenv("RSX_FE_KEYCAPS");
-        fe_menu = (!_stricmp(b, "ResistanceFoM.exe") && e && atoi(e) == 3) ? 1 : 0; }   /* v160p: off -- menus use Anark scene strings */
+        fe_menu = (!_stricmp(b, "PortFrontEnd.exe") && e && atoi(e) == 3) ? 1 : 0; }   /* v160p: off -- menus use Anark scene strings */
     /* v160v: "Press the START button" (level intro card): on keyboard it's Space */
     for (uint32_t i = 1; !pad && i < end; i++) {
         if (p[i - 1] != 0 || p[i] == 0) continue;
@@ -1360,8 +1360,8 @@ extern "C" void rfom_text_patch(uint32_t file_obj)
       const char* b = strrchr(mp, '\\'); b = b ? b + 1 : mp;
       /* v162b: not when the pause menu loads its text (play was running a moment ago) -- Space there is Cross */
       const ULONGLONG t = GetTickCount64();
-      if (_stricmp(b, "ResistanceFoM.exe") && (!g_rfom_play_ms || t - g_rfom_play_ms > 3000)) g_rfom_space_start = 1;
-      else if (_stricmp(b, "ResistanceFoM.exe")) g_rfom_pause_ui = 1; }   /* v162c: text loaded mid-play = the pause menu */
+      if (_stricmp(b, "PortFrontEnd.exe") && (!g_port_play_ms || t - g_port_play_ms > 3000)) g_port_space_start = 1;
+      else if (_stricmp(b, "PortFrontEnd.exe")) g_port_pause_ui = 1; }   /* v162c: text loaded mid-play = the pause menu */
     for (uint32_t i = 1; fe_menu && !pad && i < end; i++) {
         if (p[i - 1] != 0 || p[i] == 0) continue;
         uint32_t m = 0; while (i + m < end && p[i + m] && m < 64) m++;
@@ -1969,25 +1969,25 @@ extern "C" void r2_menu_icon(ppu_context* ctx)
  * pressed, plus its time-since-pressed at ctrl+0x19A0+26*4, a press buffer). For the length of those
  * calls the bit is replaced by the INTERACT input (libs/input/cellPad.c), and
  * put back afterwards, so the melee code elsewhere still sees Triangle. */
-extern "C" volatile int g_rfom_use_kbm, g_rfom_kbm_interact_bound, g_rfom_input_kbm;
-extern "C" volatile uint16_t g_rfom_pad_btns0, g_rfom_pad_interact;
+extern "C" volatile int g_port_use_kbm, g_port_kbm_interact_bound, g_port_input_kbm;
+extern "C" volatile uint16_t g_port_pad_btns0, g_port_pad_interact;
 static thread_local int t_use_depth = 0;
 static thread_local uint32_t t_use_slot = 0, t_use_ctrl = 0, t_use_s54, t_use_s58, t_use_hold;
 static uint32_t s_use_last_slot = 0; static int s_use_held = 0, s_use_prev = 0;
 static double s_use_since = 100.0; static LARGE_INTEGER s_use_t0;
-extern "C" void rfom_use_begin(uint32_t player, uint32_t mask)
+extern "C" void port_use_begin(uint32_t player, uint32_t mask)
 {
     if (t_use_depth++ || mask != 0x04000000u) return;
     t_use_slot = 0;
     static int en = -1;
-    if (en < 0) { const char* e = getenv("RFOM_SPLIT_USE"); en = e ? atoi(e) : 1; }
+    if (en < 0) { const char* e = getenv("PORT_SPLIT_USE"); en = e ? atoi(e) : 1; }
     if (!en || !player) return;
     int held;
-    if (g_rfom_input_kbm) { if (!g_rfom_kbm_interact_bound) return; held = g_rfom_use_kbm != 0; }
-    else { if (!g_rfom_pad_interact) return; held = (g_rfom_pad_btns0 & g_rfom_pad_interact) != 0; }
+    if (g_port_input_kbm) { if (!g_port_kbm_interact_bound) return; held = g_port_use_kbm != 0; }
+    else { if (!g_port_pad_interact) return; held = (g_port_pad_btns0 & g_port_pad_interact) != 0; }
     const uint32_t ctrl = vm_read32(player + 0x3E90);
     if (!ctrl || ctrl >= 0xF0000000u) return;
-    if (g_rfom_opts_ea && vm_read32(ctrl + 0x1AC0) != g_rfom_opts_ea) return;   /* not the player's controller */
+    if (g_port_opts_ea && vm_read32(ctrl + 0x1AC0) != g_port_opts_ea) return;   /* not the player's controller */
     const uint32_t idx = vm_read32(ctrl + 0x1AA4);
     if (idx >= 64) return;
     const uint32_t slot = ctrl + idx * 96;
@@ -2008,7 +2008,7 @@ extern "C" void rfom_use_begin(uint32_t player, uint32_t mask)
     static int logged = 0;
     if (pressed && logged++ < 20) fprintf(stderr, "[use] interact pressed (player 0x%08X)%c", player, 10);
 }
-extern "C" void rfom_use_end(void)
+extern "C" void port_use_end(void)
 {
     if (t_use_depth > 0) t_use_depth--;
     if (t_use_depth || !t_use_slot) return;
@@ -2024,23 +2024,23 @@ extern "C" void rfom_use_end(void)
  * weighted by frame time, into *out. On PS3 you shake both sticks; on keyboard
  * & mouse only the mouse (fed to the right stick) should be needed, so with no
  * controller the meter counts double -- the mouse alone does what both sticks
- * did. RFOM_GRAB_MOUSE_SCALE overrides the factor. A controller is untouched. */
+ * did. PORT_GRAB_MOUSE_SCALE overrides the factor. A controller is untouched. */
 /* v159: the grab escape meter on keyboard & mouse is the MOUSE alone. The
  * game's meter (func_00294318) sums both sticks' movement over the last
  * window_s seconds (x frame time); WASD (on/off keys) dominated it and the
  * smoothed mouse stick barely registered. With no controller the reading is
  * replaced by the mouse travel over the same window, scaled so vigorous
  * shaking (~3000 counts/s) matches flicking both sticks hard (~32 stick
- * units/s x 1/30 s). WASD no longer counts. RFOM_GRAB_MOUSE_K overrides the
- * scale (per count), RFOM_GRAB_MOUSE=0 = the game's own meter.
+ * units/s x 1/30 s). WASD no longer counts. PORT_GRAB_MOUSE_K overrides the
+ * scale (per count), PORT_GRAB_MOUSE=0 = the game's own meter.
  * logs\grab.txt: game reading vs mouse reading, every 100 ms while it runs. */
 extern "C" volatile unsigned long long g_kbm_mouse_abs;
-extern "C" void rfom_waggle(uint32_t out_ea, double window_s)
+extern "C" void port_waggle(uint32_t out_ea, double window_s)
 {
     if (!out_ea) return;
     static int en = -1; static double k = 0;
-    if (en < 0) { const char* e = getenv("RFOM_GRAB_MOUSE"); en = e ? atoi(e) : 1;
-                  const char* q = getenv("RFOM_GRAB_MOUSE_K"); k = q ? atof(q) : 3.75e-5; }   /* v159c: ~2-3 s of hard shaking */
+    if (en < 0) { const char* e = getenv("PORT_GRAB_MOUSE"); en = e ? atoi(e) : 1;
+                  const char* q = getenv("PORT_GRAB_MOUSE_K"); k = q ? atof(q) : 3.75e-5; }   /* v159c: ~2-3 s of hard shaking */
     /* mouse travel history: (ms, cumulative counts), one sample per call */
     static ULONGLONG ht[256]; static unsigned long long hc[256]; static int hn = 0, hi = 0;
     const ULONGLONG now = GetTickCount64();
@@ -2057,7 +2057,7 @@ extern "C" void rfom_waggle(uint32_t out_ea, double window_s)
     }
     const double mouse = (double)(cur - base) * k;
     uint32_t w = vm_read32(out_ea); float f; memcpy(&f, &w, 4);
-    const int kbm = g_rfom_input_kbm != 0 || now - g_ml_kbm_ms < 500;   /* keyboard pad fed port 0 recently */
+    const int kbm = g_port_input_kbm != 0 || now - g_ml_kbm_ms < 500;   /* keyboard pad fed port 0 recently */
     { static int n = 0; static ULONGLONG last = 0;
       if (r2_diag() && (f > 0 || mouse > 0) && n < 3000 && now - last >= 100) { last = now;
         if (FILE* lf = fopen("logs\\grab.txt", n++ ? "a" : "w")) {
@@ -2071,7 +2071,7 @@ extern "C" void rfom_waggle(uint32_t out_ea, double window_s)
  * later compared: every byte / halfword / word that moved by exactly +1 on
  * Down/Right or -1 on Up/Left scores a point (and loses one on a wrong move).
  * The best candidates go to logs\menuprobe.txt after every press.
- * RFOM_MENU_PROBE=0 disables. */
+ * PORT_MENU_PROBE=0 disables. */
 static DWORD WINAPI menu_probe_thread(LPVOID)
 {
     /* v160g: the highlight is "some value that is a function of the
@@ -2222,7 +2222,7 @@ static DWORD WINAPI menu_probe_thread(LPVOID)
  * text renderer turns the "O - " / "X - " prefix into the button picture.
  * Rewritten in place (same length, so nothing in the scene moves) whenever
  * a scene is loaded: "ESC BACK", "SPC SELECT" -- no prefix, so plain words.
- * Scans guest RAM every 2 s (front end only). RFOM_FE_HINTS=0 disables. */
+ * Scans guest RAM every 2 s (front end only). PORT_FE_HINTS=0 disables. */
 static DWORD WINAPI fe_hints_thread(LPVOID)
 {
     extern uint8_t* vm_base;
@@ -2273,19 +2273,19 @@ static void menu_probe_start(void)
 {
     { char mp[MAX_PATH] = ""; GetModuleFileNameA(NULL, mp, MAX_PATH);
       const char* b = strrchr(mp, '\\'); b = b ? b + 1 : mp;
-      const char* eh = getenv("RFOM_FE_HINTS");
-      if (!_stricmp(b, "ResistanceFoM.exe") && eh && atoi(eh)) CreateThread(NULL, 0, fe_hints_thread, NULL, 0, NULL); }   /* v160r: off (the scene strings are not what is drawn) */
+      const char* eh = getenv("PORT_FE_HINTS");
+      if (!_stricmp(b, "PortFrontEnd.exe") && eh && atoi(eh)) CreateThread(NULL, 0, fe_hints_thread, NULL, 0, NULL); }   /* v160r: off (the scene strings are not what is drawn) */
     char mp[MAX_PATH] = ""; GetModuleFileNameA(NULL, mp, MAX_PATH);
     const char* b = strrchr(mp, '\\'); b = b ? b + 1 : mp;
-    const char* e = getenv("RFOM_MENU_PROBE");   /* v160i: off unless RFOM_MENU_PROBE=1 */
-    if (_stricmp(b, "ResistanceFoM.exe") || !e || !atoi(e)) return;
+    const char* e = getenv("PORT_MENU_PROBE");   /* v160i: off unless PORT_MENU_PROBE=1 */
+    if (_stricmp(b, "PortFrontEnd.exe") || !e || !atoi(e)) return;
     CreateThread(NULL, 0, menu_probe_thread, NULL, 0, NULL);
 }
 /* v161 diag: the black screen after the Grimsby door lever -- the main
  * thread loops in func_0002F54C waiting for a file job (func_00043488 opens
  * the path at job+0x1C, func_000434DC steps it; state at +4, handle +0x11C).
  * Log each open, and the job's state once a second while it is polled. */
-extern "C" void rfom_ld_open(uint32_t job)
+extern "C" void port_ld_open(uint32_t job)
 {
     extern uint8_t* vm_base;
     char path[256]; int k = 0;
@@ -2293,7 +2293,7 @@ extern "C" void rfom_ld_open(uint32_t job)
     path[k] = 0;
     fprintf(stderr, "[loadjob] open job=0x%08X '%s'%c", job, path, 10);
 }
-extern "C" void rfom_ld_vcall(uint32_t fn, uint32_t a4, uint32_t a5, uint32_t a6, uint32_t obj)
+extern "C" void port_ld_vcall(uint32_t fn, uint32_t a4, uint32_t a5, uint32_t a6, uint32_t obj)
 {
     extern uint8_t* vm_base;
     char path[128]; int k = 0;
@@ -2322,31 +2322,31 @@ extern "C" void rfom_ld_vcall(uint32_t fn, uint32_t a4, uint32_t a5, uint32_t a6
         fprintf(stderr, "[loadjob] request slots busy: %d of 64%c", busy, 10);
     }
 }
-extern "C" void rfom_ld_vret(int32_t r)
+extern "C" void port_ld_vret(int32_t r)
 {
     static int n = 0;
     if (n++ < 60) fprintf(stderr, "[loadjob] vfs open -> %d (0x%X)%c", r, (uint32_t)r, 10);
 }
 /* v161e: inside func_000DDA18 (game IO async open): 1 = device from func_000DAF10 (dir, name), 2 = file/request slot, 3 = device open result */
-static void rfom_ld_str(uint32_t ea, char* out, int n)
+static void port_ld_str(uint32_t ea, char* out, int n)
 {
     int i = 0;
     if (ea) for (; i < n - 1; i++) { const char c = (char)vm_read8(ea + i); if (!c) break; out[i] = (c >= 32 && c < 127) ? c : '?'; }
     out[i] = 0;
 }
 /* v161f FIX: func_000D9B9C splits paths it doesn't recognise after the 2nd '/', so
-   '/dev_hdd1/cache/BCUS98107/hdd1_movie_stash' becomes dir '/dev_hdd1' and func_000DAF10 finds no
+   '/dev_hdd1/cache/BCES00226/hdd1_movie_stash' becomes dir '/dev_hdd1' and func_000DAF10 finds no
    device (0) -> the open fails forever (Grimsby lever black screen). If that happens, re-split the
    path against the IO object's own mount roots and return that mount's device. */
-extern "C" uint32_t rfom_ld_fixdev(uint32_t obj, uint32_t dir_ea, uint32_t name_ea)
+extern "C" uint32_t port_ld_fixdev(uint32_t obj, uint32_t dir_ea, uint32_t name_ea)
 {
     char d[256], f[256], full[520];
-    rfom_ld_str(dir_ea, d, 256); rfom_ld_str(name_ea, f, 256);
+    port_ld_str(dir_ea, d, 256); port_ld_str(name_ea, f, 256);
     snprintf(full, sizeof full, "%s/%s", d, f[0] == '/' ? f + 1 : f);
     static const uint32_t roots[3] = { 5, 0x10A, 0x20A }, devs[3] = { 0x528, 0x52C, 0x530 };
     int best = -1; size_t bl = 0;
     for (int k = 0; k < 3; k++) {
-        char m[256]; rfom_ld_str(obj + roots[k], m, 256);
+        char m[256]; port_ld_str(obj + roots[k], m, 256);
         const size_t ml = strlen(m);
         if (ml && ml > bl && !strncmp(full, m, ml) && full[ml] == '/' && vm_read32(obj + devs[k])) { best = k; bl = ml; }
     }
@@ -2359,16 +2359,16 @@ extern "C" uint32_t rfom_ld_fixdev(uint32_t obj, uint32_t dir_ea, uint32_t name_
     fprintf(stderr, "[loadjob] fixdev: '%s' -> dir='%.*s' name='%s' device=0x%X%c", full, (int)bl, full, rest, dev, 10);
     return dev;
 }
-extern "C" void rfom_ld_step(int tag, uint32_t a, uint32_t b, uint32_t c)
+extern "C" void port_ld_step(int tag, uint32_t a, uint32_t b, uint32_t c)
 {
     static int n = 0;
     if (tag < 4 && n++ >= 90) return;
     if (tag == 1) {
-        char d[256], f[256]; rfom_ld_str(b, d, 256); rfom_ld_str(c, f, 256);
+        char d[256], f[256]; port_ld_str(b, d, 256); port_ld_str(c, f, 256);
         fprintf(stderr, "[loadjob] ioopen device=0x%X dir='%s' name='%s'%c", a, d, f, 10);
     } else if (tag == 4 || tag == 5) {
         static int m = 0; if (m++ >= 40) return;
-        char r[256], q[256]; rfom_ld_str(a, r, 256); rfom_ld_str(b, q, 256);
+        char r[256], q[256]; port_ld_str(a, r, 256); port_ld_str(b, q, 256);
         fprintf(stderr, "[loadjob] split root%s='%s' path='%s'%c", tag == 4 ? "+8" : "+C", r, q, 10);
     } else if (tag == 2) {
         fprintf(stderr, "[loadjob] ioopen fileslot=%d reqslot=%d%c", (int32_t)a, (int32_t)b, 10);
@@ -2376,7 +2376,7 @@ extern "C" void rfom_ld_step(int tag, uint32_t a, uint32_t b, uint32_t c)
         fprintf(stderr, "[loadjob] ioopen dev open -> %d (0x%X) slot=0x%X dev=0x%X%c", (int32_t)a, a, b, c, 10);
     }
 }
-extern "C" void rfom_ld_poll(uint32_t job, int)
+extern "C" void port_ld_poll(uint32_t job, int)
 {
     static ULONGLONG last = 0; static uint32_t lj = 0;
     const ULONGLONG now = GetTickCount64();
@@ -2386,10 +2386,10 @@ extern "C" void rfom_ld_poll(uint32_t job, int)
             (int)vm_read32(job + 4), (int)vm_read32(job + 0x11C), vm_read32(job + 0x10), vm_read32(job + 0x14),
             vm_read32(job + 0x18), vm_read32(job + 0x120), 10);
 }
-extern "C" uint64_t rfom_movie_evwait_us(void)
+extern "C" uint64_t port_movie_evwait_us(void)
 {
     static long long us = -1;
-    if (us < 0) { const char* e = getenv("RFOM_MOVIE_EVWAIT_MS"); us = (e ? atoll(e) : 100) * 1000; if (us < 0) us = 0; }
+    if (us < 0) { const char* e = getenv("PORT_MOVIE_EVWAIT_MS"); us = (e ? atoll(e) : 100) * 1000; if (us < 0) us = 0; }
     return (uint64_t)us;
 }
 
@@ -2401,7 +2401,7 @@ extern "C" void ps3_load_prx_modules(void)
     { static char dbgpath[1024];
       const char* dp = getenv("PS3_DEBUG");
       s_dbg_main_tid = GetCurrentThreadId();
-      { const char* mc = getenv("RFOM_MAIN_CORE");
+      { const char* mc = getenv("PORT_MAIN_CORE");
         if (!mc || atoi(mc)) CreateThread(NULL, 0, main_core_keeper, NULL, 0, NULL); }
       if (dp && *dp) { snprintf(dbgpath, sizeof dbgpath, "%s", dp);
                        CreateThread(NULL, 0, debug_console, dbgpath, 0, NULL); } }

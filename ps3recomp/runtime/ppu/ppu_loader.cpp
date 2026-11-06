@@ -4025,7 +4025,7 @@ extern "C" uint64_t ppu_guest_call_ct(uint32_t code, uint32_t toc,
 extern "C" ppu_context* volatile g_ppu_main_ctx = nullptr;
 
 /* Main-thread stack top, for sys_ppu_thread_get_stack_information: a title
- * finds the exitspawn data block at stack addr + size - 0x1000 (Fall of Man's
+ * finds the exitspawn data block at stack addr + size - 0x1000 (the game's
  * game.self checks for its "ELFtastic!" magic there). */
 extern "C" { uint32_t g_ppu_main_stack_top = 0; }
 

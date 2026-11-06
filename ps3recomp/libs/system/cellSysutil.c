@@ -432,7 +432,7 @@ s32 cellSysutilGetSystemParamInt(s32 id, u32 value_ea)
     /* 0x0122 (undocumented): the console's license area, as cellSysutilGetLicenseArea --
      * 0 J, 1 A (Americas), 2 E, 3 H, 4 K, 5 C. Returning 0 (Japan) made Resistance pick
      * its reduced-gore mode (no blood on bullet hits). BCUS = Americas. */
-    case 0x0122: { const char* e = getenv("RFOM_LICENSE_AREA"); v = e ? atoi(e) : 1; } break;   /* v163g: env for A/B tests */
+    case 0x0122: { const char* e = getenv("PORT_LICENSE_AREA"); v = e ? atoi(e) : 1; } break;   /* v163g: env for A/B tests */
     case CELL_SYSUTIL_SYSTEMPARAM_ID_CAMERA_PLFREQ:  v = 0; break; /* 60Hz */
     case CELL_SYSUTIL_SYSTEMPARAM_ID_PAD_RUMBLE:     v = 1; break; /* Rumble on */
     case CELL_SYSUTIL_SYSTEMPARAM_ID_KEYBOARD_TYPE:  v = 0; break; /* US/101 */

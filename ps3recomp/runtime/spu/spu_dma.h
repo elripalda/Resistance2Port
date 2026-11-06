@@ -1374,7 +1374,7 @@ static inline int mfc_submit(mfc_engine* mfc, spu_context* spu, uint32_t cmd)
       if (!s_limit) { const char* e = getenv("SPU_DMA_REPEAT_LIMIT");
                       s_limit = e ? (uint32_t)strtoul(e, 0, 0) : 256u;
                       e = getenv("SPU_DMA_REPEAT_SECS");
-                      /* Resistance port: default 0 = never halt. Fall of Man's
+                      /* Resistance port: default 0 = never halt. The game's
                        * persistent command jobs and the WWS job manager itself
                        * poll one EA for as long as the level runs (the PPU's
                        * next command can be minutes away); halting them after

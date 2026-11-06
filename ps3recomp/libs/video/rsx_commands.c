@@ -346,7 +346,7 @@ static int process_vertex_attrib_method(rsx_state* state, u32 method, u32 data)
 /* Resistance port: RSX immediate mode. Between SET_BEGIN_END(prim) and
  * SET_BEGIN_END(0), writing the last component of attribute 0 through any
  * SET_VERTEX_DATA*_M register emits one vertex carrying the current value of
- * every attribute register (glVertex semantics). Fall of Man draws its menu
+ * every attribute register (glVertex semantics). The game draws its menu
  * backgrounds and full-screen passes this way (2F_M position + texcoord);
  * those vertices were dropped, so the passes never drew. At BEGIN_END(0) the
  * collected vertices are drawn through the backend's normal draw_arrays path,
@@ -598,7 +598,7 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
      * for the frequency divisor (instancing). Captured for read_vp_vertex. */
     if (method == 0x00001FC0) { state->frequency_divider_op = data; return 0; }
     /* Resistance port: vertex data base offset / base index. Ignored, every
-     * mesh that relies on them (Fall of Man shares one vertex pool across a
+     * mesh that relies on them (the game shares one vertex pool across a
      * level and selects each mesh by base offset) fetched from the start of
      * the pool: the world drew as giant stretched triangles. */
     if (method == 0x00001738) { state->vertex_data_base_offset = data; return 0; }
@@ -986,7 +986,7 @@ L_vdata:
     }
 
     /* Resistance port: the other encodings of the constant vertex-attribute
-     * register file (see the 4F_M comment above). Fall of Man feeds its UI
+     * register file (see the 4F_M comment above). The game feeds its UI
      * vertex colour (attribute 1) through one of these with the colour array
      * disabled; without them col0 read as (0,0,0,1) and every menu draw came
      * out black. Semantics follow RPCS3 NV47/HW/nv4097.h set_vertex_data_impl:
@@ -995,7 +995,7 @@ L_vdata:
         int idx = -1, n = 0, sub = 0; float v[4] = {0, 0, 0, 1}; int partial = 0;
         if (method >= 0x1940u && method < 0x1940u + RSX_MAX_VERTEX_ATTRIBS * 4u) {        /* 4UB_M */
             idx = (method - 0x1940u) >> 2; n = 4;
-            /* Byte order measured on Fall of Man's UI colours (checked
+            /* Byte order measured on the game's UI colours (checked
              * against the real menu art): the word is 0xAABBGGRR -- R in the
              * low byte, alpha in the high byte. */
             v[0] = (float)( data        & 0xFFu) / 255.0f;   /* R */
@@ -1212,7 +1212,7 @@ L_draw:
         state->index_array_offset = data;
         return 0;
     }
-    /* Resistance port: primitive restart. Fall of Man draws its ground as
+    /* Resistance port: primitive restart. The game draws its ground as
      * indexed triangle strips cut by 0xFFFF; ignoring the cut fetched vertex
      * 65535 (spikes) and flipped every following strip's winding (culled). */
     if (method == 0x1DAC) { state->restart_index_enable = data & 1u; return 0; }
