@@ -70,6 +70,7 @@ If you hit a problem, let me know how to reproduce it, and if you can, send the 
 
 ## Credits and licences
 
+- [Resistance: Fall of Man PC port](https://github.com/miroslavdanutalexandru-alt/Resistance-Fall-of-Man-Recomp): this port builds on its runtime, tools and research (SPURS/SPU job handling, frame pacing, input, audio and video fixes).
 - ps3recomp, by Ned Heller / sp00nznet: MIT.
 - RPCS3 (RSX core and Vulkan renderer), downloaded during setup and patched: GPL-2.0. Because the built game links RPCS3 code, **the built program is distributed under the GPL-2.0**; the patch in this repository is GPL-2.0 too.
 - AMD FidelityFX SDK (FSR 3.1): MIT, © Advanced Micro Devices.
