@@ -1,0 +1,6 @@
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.dll binary
+
+# applied with git apply to an LF checkout of RPCS3: keep byte-exact
+*.patch -text

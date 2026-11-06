@@ -1,0 +1,3329 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 3b3c9a0..ec8e572 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,140 +1,390 @@
+-cmake_minimum_required(VERSION 3.28)
++# RPCS3 RSX (front end + Vulkan backend), vendored from RPCS3 commit eee3f0f.
++# GPLv2 -- see LICENSE and README.port.md in this directory.
++#
++# Standalone:
++#   cmake -S ps3recomp/third_party/rpcs3 -B build_rpcs3 -G Ninja
++#         -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
++#   cmake --build build_rpcs3
++#
++# As a subproject:
++#   add_subdirectory(third_party/rpcs3)   ->  target rpcs3::rsx (alias of rpcs3_rsx)
++#
++# Only Windows + clang-cl (or MSVC) is supported for now.
+ 
+-find_program(CCACHE_PATH ccache HINTS ENV PATH)
+-if(CCACHE_PATH)
+-  message(STATUS "Using ccache: ${CCACHE_PATH}")
+-  set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PATH}")
+-  set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PATH}")
+-endif()
++cmake_minimum_required(VERSION 3.20)
++project(rpcs3_rsx LANGUAGES C CXX)
+ 
+-project(rpcs3 LANGUAGES C CXX)
++set(RPCS3_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
++get_filename_component(RPCS3_SHIM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../rpcs3_shim" ABSOLUTE)
+ 
+-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
++option(RPCS3_RSX_BUILD_LINKTEST "Build the rpcs3_rsx_linktest executable" ${PROJECT_IS_TOP_LEVEL})
+ 
+-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+-    if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 13)
+-        message(FATAL_ERROR "RPCS3 requires at least gcc-13.")
+-    endif()
+-elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+-    if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 19.0)
+-        message(FATAL_ERROR "RPCS3 requires at least clang-19.0.")
+-    endif()
++if(NOT WIN32 OR NOT MSVC)
++    message(FATAL_ERROR "rpcs3_rsx: only Windows with clang-cl/MSVC is supported")
+ endif()
+ 
+-if(APPLE OR WIN32)
+-    set(USE_SYSTEM_OPENAL_DEFAULT OFF)
+-else()
+-    set(USE_SYSTEM_OPENAL_DEFAULT ON)
++if(NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
++    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+ endif()
+ 
+-option(USE_NATIVE_INSTRUCTIONS "USE_NATIVE_INSTRUCTIONS makes rpcs3 compile with -march=native, which is useful for local builds, but not good for packages." ON)
+-option(USE_ARM_LSE2 "Compile with LSE2 instructions" OFF)
+-option(WITH_LLVM "Enable usage of LLVM library" ON)
+-option(BUILD_LLVM "Build LLVM from git submodule" OFF)
+-option(STATIC_LINK_LLVM "Link against LLVM statically. This will get set to ON if you build LLVM from the submodule." OFF)
+-option(USE_FAUDIO "FAudio audio backend" ON)
+-option(USE_LIBEVDEV "libevdev-based joystick support" ON)
+-option(USE_DISCORD_RPC "Discord rich presence integration" OFF)
+-option(USE_VULKAN "Vulkan render backend" ON)
+-option(USE_PRECOMPILED_HEADERS "Use precompiled headers" OFF)
+-option(USE_SDL "Enables SDL input handler" ON)
+-option(USE_SYSTEM_CUBEB "Prefer system cubeb instead of the builtin one" OFF)
+-option(USE_SYSTEM_CURL "Prefer system Curl instead of the prebuild one" ON)
+-option(USE_SYSTEM_FAUDIO "Prefer system FAudio instead of the builtin one" OFF)
+-option(USE_SYSTEM_FFMPEG "Prefer system ffmpeg instead of the prebuild one" OFF)
+-option(USE_SYSTEM_PROTOBUF "Prefer system protobuf instead of the builtin one" OFF)
+-option(USE_SYSTEM_GLSLANG "Prefer system glslang instead of the builtin one" OFF)
+-option(USE_SYSTEM_HIDAPI "Prefer system hidapi instead of the builtin one" OFF)
+-option(USE_SYSTEM_LIBPNG "Prefer system libpng instead of the builtin one" OFF)
+-option(USE_SYSTEM_LIBUSB "Prefer system libusb instead of the builtin one" OFF)
+-option(USE_SYSTEM_MINIUPNPC "Prefer system MiniUPnPc instead of the builtin one" OFF)
+-option(USE_SYSTEM_MVK "Prefer system MoltenVK instead of the builtin one" OFF)
+-option(USE_SYSTEM_OPENAL "Prefer system OpenAL instead of the prebuild one" ${USE_SYSTEM_OPENAL_DEFAULT})
+-option(USE_SYSTEM_PUGIXML "Prefer system pugixml instead of the builtin one" OFF)
+-option(USE_SYSTEM_RTMIDI "Prefer system RtMidi instead of the builtin one" OFF)
+-option(USE_SYSTEM_SDL "Prefer system SDL instead of the builtin one" ON)
+-option(USE_SYSTEM_VULKAN_MEMORY_ALLOCATOR "Prefer system Vulkan Memory Allocator instead of the builtin one" OFF)
+-option(USE_SYSTEM_WOLFSSL "Prefer system wolfSSL instead of the builtin one" OFF)
+-option(USE_SYSTEM_ZLIB "Prefer system ZLIB instead of the builtin one" ON)
+-option(USE_SYSTEM_ZSTD "Prefer system zstd instead of the builtin one" OFF)
+-option(HAS_MEMORY_BREAKPOINTS "Add support for memory breakpoints to the interpreter" OFF)
+-option(USE_LTO "Use LTO for building" ON)
+-option(BUILD_RPCS3_TESTS "Build RPCS3 unit tests." OFF)
+-option(RUN_RPCS3_TESTS "Run RPCS3 unit tests. Requires BUILD_RPCS3_TESTS" OFF)
+-option(USE_GAMEMODE "Choose whether to enable GameMode features or not." ON)
+-option(BUNDLE_UDEV_RULES "Include udev rules on Linux/FreeBSD" OFF)
+-
+-set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/buildfiles/cmake")
+-
+-include(CheckCXXCompilerFlag)
+-
+-get_property(IS_MULTI_CONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+-if(IS_MULTI_CONFIG)
+-    # TODO(cjj19970505@live.cn)
+-    # Currently DicordRPC is included as a binary compiled with /MT flag.
+-    # We need all 4 binaries(/MT /MTd /MD /MDd) or including the source instead of binary.
+-    set(USE_DISCORD_RPC OFF CACHE BOOL "Discord RPC is only avaliable with single-config generator" FORCE)
+-else()
+-    if(NOT CMAKE_BUILD_TYPE)
+-        message(STATUS "No build type selected, default to Release")
+-        set(CMAKE_BUILD_TYPE "Release")
+-    endif()
++# ---------------------------------------------------------------------------
++# Vulkan: headers are vendored (Khronos Vulkan-Headers). The loader import
++# library comes from the Vulkan SDK when one is installed, else it is generated
++# from rpcs3_shim/vulkan/vulkan-1.def (the exports of the system vulkan-1.dll).
++# ---------------------------------------------------------------------------
++set(RPCS3_VULKAN_LIB "" CACHE FILEPATH "vulkan-1.lib to link (empty = SDK or generated)")
++if(NOT RPCS3_VULKAN_LIB AND DEFINED ENV{VULKAN_SDK} AND EXISTS "$ENV{VULKAN_SDK}/Lib/vulkan-1.lib")
++    set(RPCS3_VULKAN_LIB "$ENV{VULKAN_SDK}/Lib/vulkan-1.lib")
+ endif()
+-
+-if(CMAKE_BUILD_TYPE MATCHES "Debug" AND NOT MSVC)
+-    add_compile_definitions(_DEBUG)
++if(NOT RPCS3_VULKAN_LIB)
++    set(RPCS3_VULKAN_LIB "${CMAKE_CURRENT_BINARY_DIR}/vulkan-1.lib")
++    add_custom_command(
++        OUTPUT "${RPCS3_VULKAN_LIB}"
++        COMMAND "${CMAKE_AR}" /nologo /machine:x64 "/def:${RPCS3_SHIM_DIR}/vulkan/vulkan-1.def" "/out:${RPCS3_VULKAN_LIB}"
++        DEPENDS "${RPCS3_SHIM_DIR}/vulkan/vulkan-1.def"
++        COMMENT "Generating vulkan-1.lib import library")
++    add_custom_target(rpcs3_vulkan_implib DEPENDS "${RPCS3_VULKAN_LIB}")
+ endif()
+-
+-if(MSVC)
+-    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:/MP>")
++add_library(rpcs3_vulkan INTERFACE)
++target_include_directories(rpcs3_vulkan SYSTEM INTERFACE "${RPCS3_DIR}/3rdparty/Vulkan-Headers/include")
++target_compile_definitions(rpcs3_vulkan INTERFACE HAVE_VULKAN)
++target_link_libraries(rpcs3_vulkan INTERFACE "${RPCS3_VULKAN_LIB}")
++if(TARGET rpcs3_vulkan_implib)
++    add_dependencies(rpcs3_vulkan rpcs3_vulkan_implib)
+ endif()
+ 
+-if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+-    message(FATAL_ERROR "RPCS3 can only be compiled on 64-bit platforms.")
+-endif()
++# ---------------------------------------------------------------------------
++# Third party (built without RPCS3's warning/define set)
++# ---------------------------------------------------------------------------
++# glslang (GLSL -> SPIR-V at run time)
++set(ENABLE_PCH OFF CACHE BOOL "" FORCE)
++set(BUILD_EXTERNAL OFF CACHE BOOL "" FORCE)
++set(SKIP_GLSLANG_INSTALL ON CACHE BOOL "" FORCE)
++set(ENABLE_SPVREMAPPER OFF CACHE BOOL "" FORCE)
++set(ENABLE_GLSLANG_BINARIES OFF CACHE BOOL "" FORCE)
++set(ENABLE_HLSL OFF CACHE BOOL "" FORCE)
++set(ENABLE_OPT OFF CACHE BOOL "" FORCE)
++set(ENABLE_CTEST OFF CACHE BOOL "" FORCE)
++set(GLSLANG_TESTS OFF CACHE BOOL "" FORCE)
++set(GLSLANG_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
++set(BUILD_SHARED_LIBS OFF)
++add_subdirectory(3rdparty/glslang/glslang EXCLUDE_FROM_ALL)
+ 
+-if(APPLE AND CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+-    list(APPEND CMAKE_PREFIX_PATH "/opt/homebrew")
+-    list(APPEND CMAKE_SYSTEM_PREFIX_PATH "/opt/homebrew")
+-endif()
++# yaml-cpp (cfg system)
++set(YAML_CPP_INSTALL OFF CACHE BOOL "" FORCE)
++set(YAML_CPP_DISABLE_UNINSTALL ON CACHE BOOL "" FORCE)
++set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
++set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
++set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
++set(YAML_CPP_FORMAT_SOURCE OFF CACHE BOOL "" FORCE)
++add_subdirectory(3rdparty/yaml-cpp/yaml-cpp EXCLUDE_FROM_ALL)
+ 
+-if(MSVC)
+-    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:/wd4530;/utf-8>") # C++ exception handler used, but unwind semantics are not enabled
+-endif()
++# asmjit (BufferUtils and Thread.cpp emit small x86 helpers at run time)
++set(ASMJIT_EMBED TRUE)
++set(ASMJIT_STATIC TRUE)
++set(ASMJIT_BUILD_X86 TRUE)
++set(ASMJIT_BUILD_ARM FALSE)
++set(ASMJIT_BUILD_TEST FALSE)
++set(ASMJIT_NO_DEPRECATED TRUE)
++set(ASMJIT_DIR "${RPCS3_DIR}/3rdparty/asmjit/asmjit")
++include("${ASMJIT_DIR}/CMakeLists.txt")
++add_library(rpcs3_asmjit STATIC ${ASMJIT_SRC})
++target_include_directories(rpcs3_asmjit SYSTEM PUBLIC "${ASMJIT_DIR}/src")
++target_compile_definitions(rpcs3_asmjit PUBLIC ASMJIT_EMBED ASMJIT_STATIC ASMJIT_NO_DEPRECATED)
++target_link_libraries(rpcs3_asmjit PRIVATE ${ASMJIT_DEPS})
++target_compile_options(rpcs3_asmjit PRIVATE -w)
+ 
+-add_subdirectory(3rdparty)
++# ---------------------------------------------------------------------------
++# rpcs3_rsx
++# ---------------------------------------------------------------------------
++set(E "${RPCS3_DIR}/rpcs3/Emu")
++set(RSX_SOURCES
++    # RSX core
++    ${E}/RSX/Capture/rsx_capture.cpp
++    ${E}/RSX/Capture/rsx_replay.cpp
++    ${E}/RSX/Common/BufferUtils.cpp
++    ${E}/RSX/Common/surface_store.cpp
++    ${E}/RSX/Common/TextureUtils.cpp
++    ${E}/RSX/Common/texture_cache.cpp
++    ${E}/RSX/Common/texture_cache_types.cpp
++    ${E}/RSX/Core/RSXContext.cpp
++    ${E}/RSX/Core/RSXCoreRenderer.cpp
++    ${E}/RSX/Core/RSXDisplayEngine.cpp
++    ${E}/RSX/Core/RSXDisplayOutput.cpp
++    ${E}/RSX/Core/RSXPowerMgmt.cpp
++    ${E}/RSX/Core/RSXRenderBackend.cpp
++    # RSX/Core/RSXRendererFactory.cpp: replaced by rpcs3_shim/rsx_renderer_factory.cpp (no GL)
++    ${E}/RSX/Core/RSXDisplay.cpp
++    ${E}/RSX/Core/RSXDrawCommands.cpp
++    ${E}/RSX/Core/RSXGraphEngine.cpp
++    ${E}/RSX/gcm_enums.cpp
++    ${E}/RSX/gcm_printing.cpp
++    ${E}/RSX/Host/MM.cpp
++    ${E}/RSX/Host/RSXDMAWriter.cpp
++    ${E}/RSX/Null/NullGSRender.cpp
++    ${E}/RSX/NV47/FW/context.cpp
++    ${E}/RSX/NV47/FW/draw_call.cpp
++    ${E}/RSX/NV47/FW/reg_context.cpp
++    ${E}/RSX/NV47/HW/common.cpp
++    ${E}/RSX/NV47/HW/nv0039.cpp
++    ${E}/RSX/NV47/HW/nv3089.cpp
++    ${E}/RSX/NV47/HW/nv308a.cpp
++    ${E}/RSX/NV47/HW/nv406e.cpp
++    ${E}/RSX/NV47/HW/nv4097.cpp
++    # Overlays/FriendsList, Overlays/Network, Overlays/Trophies need RPCN/NP (wolfssl,
++    # pugixml); left out, their entry points are stubbed in rpcs3_shim/overlays_np_stubs.cpp
++    ${E}/RSX/Overlays/HomeMenu/overlay_home_icons.cpp
++    ${E}/RSX/Overlays/HomeMenu/overlay_home_menu.cpp
++    ${E}/RSX/Overlays/HomeMenu/overlay_home_menu_components.cpp
++    ${E}/RSX/Overlays/HomeMenu/overlay_home_menu_main_menu.cpp
++    ${E}/RSX/Overlays/HomeMenu/overlay_home_menu_message_box.cpp
++    ${E}/RSX/Overlays/HomeMenu/overlay_home_menu_page.cpp
++    ${E}/RSX/Overlays/HomeMenu/overlay_home_menu_settings.cpp
++    ${E}/RSX/Overlays/HomeMenu/overlay_home_menu_savestate.cpp
++    ${E}/RSX/Overlays/HomeMenu/overlay_home_menu_sidebar_page.cpp
++    ${E}/RSX/Overlays/BigPicture/overlay_big_picture.cpp
++    ${E}/RSX/Overlays/BigPicture/overlay_big_picture_game_details.cpp
++    ${E}/RSX/Overlays/BigPicture/overlay_big_picture_game_grid.cpp
++    ${E}/RSX/Overlays/BigPicture/overlay_big_picture_game_info.cpp
++    ${E}/RSX/Overlays/BigPicture/overlay_big_picture_main_menu.cpp
++    ${E}/RSX/Overlays/overlays.cpp
++    ${E}/RSX/Overlays/overlay_animated_icon.cpp
++    ${E}/RSX/Overlays/overlay_animation.cpp
++    ${E}/RSX/Overlays/overlay_audio.cpp
++    ${E}/RSX/Overlays/overlay_checkbox.cpp
++    ${E}/RSX/Overlays/overlay_compile_notification.cpp
++    ${E}/RSX/Overlays/overlay_controls.cpp
++    ${E}/RSX/Overlays/overlay_cursor.cpp
++    ${E}/RSX/Overlays/overlay_debug_overlay.cpp
++    ${E}/RSX/Overlays/overlay_edit_text.cpp
++    ${E}/RSX/Overlays/overlay_fonts.cpp
++    ${E}/RSX/Overlays/overlay_list_view.cpp
++    ${E}/RSX/Overlays/overlay_manager.cpp
++    ${E}/RSX/Overlays/overlay_media_list_dialog.cpp
++    ${E}/RSX/Overlays/overlay_message.cpp
++    ${E}/RSX/Overlays/overlay_message_dialog.cpp
++    ${E}/RSX/Overlays/overlay_osk.cpp
++    ${E}/RSX/Overlays/overlay_osk_panel.cpp
++    ${E}/RSX/Overlays/overlay_perf_metrics.cpp
++    ${E}/RSX/Overlays/overlay_gauge_button.cpp
++    ${E}/RSX/Overlays/overlay_progress_bar.cpp
++    ${E}/RSX/Overlays/overlay_save_dialog.cpp
++    ${E}/RSX/Overlays/overlay_select.cpp
++    ${E}/RSX/Overlays/overlay_slider.cpp
++    ${E}/RSX/Overlays/overlay_tabs.cpp
++    ${E}/RSX/Overlays/overlay_trophy_notification.cpp
++    ${E}/RSX/Overlays/overlay_user_list_dialog.cpp
++    ${E}/RSX/Overlays/overlay_utils.cpp
++    ${E}/RSX/Overlays/overlay_video.cpp
++    ${E}/RSX/Overlays/Shaders/shader_loading_dialog.cpp
++    ${E}/RSX/Overlays/Shaders/shader_loading_dialog_native.cpp
++    ${E}/RSX/Program/Assembler/FPASM.cpp
++    ${E}/RSX/Program/Assembler/FPOpcodes.cpp
++    ${E}/RSX/Program/Assembler/FPToCFG.cpp
++    ${E}/RSX/Program/Assembler/Passes/FP/RegisterAnnotationPass.cpp
++    ${E}/RSX/Program/Assembler/Passes/FP/RegisterDependencyPass.cpp
++    ${E}/RSX/Program/CgBinaryProgram.cpp
++    ${E}/RSX/Program/CgBinaryFragmentProgram.cpp
++    ${E}/RSX/Program/CgBinaryVertexProgram.cpp
++    ${E}/RSX/Program/FragmentProgramDecompiler.cpp
++    ${E}/RSX/Program/GLSLCommon.cpp
++    ${E}/RSX/Program/ProgramStateCache.cpp
++    ${E}/RSX/Program/program_util.cpp
++    ${E}/RSX/Program/ShaderInterpreter.cpp
++    ${E}/RSX/Program/SPIRVCommon.cpp
++    ${E}/RSX/Program/VertexProgramDecompiler.cpp
++    ${E}/RSX/GSFrameBase.cpp
++    ${E}/RSX/RSXDisAsm.cpp
++    ${E}/RSX/RSXFIFO.cpp
++    ${E}/RSX/RSXOffload.cpp
++    ${E}/RSX/RSXTexture.cpp
++    ${E}/RSX/RSXThread.cpp
++    ${E}/RSX/RSXZCULL.cpp
++    ${E}/RSX/rsx_methods.cpp
++    ${E}/RSX/rsx_vertex_data.cpp
++    ${E}/RSX/Utils/rsx_utils.cpp
++    # Vulkan backend
++    ${E}/RSX/VK/upscalers/fsr1/fsr_pass.cpp
++    ${E}/RSX/VK/vkutils/barriers.cpp
++    ${E}/RSX/VK/vkutils/buffer_object.cpp
++    ${E}/RSX/VK/vkutils/chip_class.cpp
++    ${E}/RSX/VK/vkutils/commands.cpp
++    ${E}/RSX/VK/vkutils/ex.cpp
++    ${E}/RSX/VK/vkutils/data_heap.cpp
++    ${E}/RSX/VK/vkutils/debug_print.cpp
++    ${E}/RSX/VK/vkutils/descriptors.cpp
++    ${E}/RSX/VK/vkutils/image.cpp
++    ${E}/RSX/VK/vkutils/image_helpers.cpp
++    ${E}/RSX/VK/vkutils/instance.cpp
++    ${E}/RSX/VK/vkutils/scratch.cpp
++    ${E}/RSX/VK/vkutils/sync.cpp
++    ${E}/RSX/VK/vkutils/swapchain.cpp
++    ${E}/RSX/VK/vkutils/memory.cpp
++    ${E}/RSX/VK/vkutils/device.cpp
++    ${E}/RSX/VK/vkutils/sampler.cpp
++    ${E}/RSX/VK/vkutils/shared.cpp
++    ${E}/RSX/VK/vkutils/unique_resource.cpp
++    ${E}/RSX/VK/VKAsyncScheduler.cpp
++    ${E}/RSX/VK/VKCommandStream.cpp
++    ${E}/RSX/VK/VKCommonDecompiler.cpp
++    ${E}/RSX/VK/VKCommonPipelineLayout.cpp
++    ${E}/RSX/VK/VKCompute.cpp
++    ${E}/RSX/VK/VKDataHeapManager.cpp
++    ${E}/RSX/VK/VKDMA.cpp
++    ${E}/RSX/VK/VKDraw.cpp
++    ${E}/RSX/VK/VKFormats.cpp
++    ${E}/RSX/VK/VKFragmentProgram.cpp
++    ${E}/RSX/VK/VKFramebuffer.cpp
++    ${E}/RSX/VK/VKGSRender.cpp
++    ${E}/RSX/VK/VKHelpers.cpp
++    ${E}/RSX/VK/VKMemAlloc.cpp
++    ${E}/RSX/VK/VKOverlays.cpp
++    ${E}/RSX/VK/VKPipelineCompiler.cpp
++    ${E}/RSX/VK/VKPresent.cpp
++    ${E}/RSX/VK/VKProgramPipeline.cpp
++    ${E}/RSX/VK/VKQueryPool.cpp
++    ${E}/RSX/VK/VKRenderPass.cpp
++    ${E}/RSX/VK/VKRenderTargets.cpp
++    ${E}/RSX/VK/VKResolveHelper.cpp
++    ${E}/RSX/VK/VKResourceManager.cpp
++    ${E}/RSX/VK/VKShaderInterpreter.cpp
++    ${E}/RSX/VK/VKTexture.cpp
++    ${E}/RSX/VK/VKVertexBuffers.cpp
++    ${E}/RSX/VK/VKVertexProgram.cpp
++    ${E}/RSX/VK/VKTextureCache.cpp
++    ${E}/RSX/VK/VulkanAPI.cpp
++    ${E}/RSX/VK/VKR2Upscaler.cpp  # R2PORT: FSR 3.1 / DLAA
++)
+ 
+-if (DISABLE_LTO)
+-    if (CMAKE_C_FLAGS)
+-        string(REGEX REPLACE "-flto[^ ]*" "" CMAKE_C_FLAGS ${CMAKE_C_FLAGS})
+-    endif()
+-    if (CMAKE_CXX_FLAGS)
+-        string(REGEX REPLACE "-flto[^ ]*" "" CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
+-    endif()
+-endif()
++# Real RPCS3 support code (small and self-contained enough to compile as is)
++set(SUPPORT_SOURCES
++    ${E}/CPU/CPUThread.cpp
++    ${E}/IdManager.cpp
++    ${E}/perf_meter.cpp
++    ${E}/vfs_config.cpp
++    ${E}/system_config.cpp
++    ${E}/system_config_types.cpp
++    ${E}/stb_image.cpp
++    ${RPCS3_DIR}/rpcs3/rpcs3_version.cpp
++    ${RPCS3_DIR}/rpcs3/util/atomic.cpp
++    ${RPCS3_DIR}/rpcs3/util/logs.cpp
++    ${RPCS3_DIR}/rpcs3/util/yaml.cpp
++    ${RPCS3_DIR}/rpcs3/util/sysinfo.cpp
++    ${RPCS3_DIR}/rpcs3/util/dyn_lib.cpp
++    ${RPCS3_DIR}/rpcs3/util/vm_native.cpp
++    ${RPCS3_DIR}/rpcs3/util/cpu_stats.cpp
++    ${RPCS3_DIR}/Utilities/cheat_info.cpp
++    ${RPCS3_DIR}/Utilities/cond.cpp
++    ${RPCS3_DIR}/Utilities/Config.cpp
++    ${RPCS3_DIR}/Utilities/date_time.cpp
++    ${RPCS3_DIR}/Utilities/File.cpp
++    ${RPCS3_DIR}/Utilities/JITASM.cpp
++    ${RPCS3_DIR}/Utilities/mutex.cpp
++    ${RPCS3_DIR}/Utilities/sema.cpp
++    ${RPCS3_DIR}/Utilities/stack_trace.cpp
++    ${RPCS3_DIR}/Utilities/stereo_config.cpp
++    ${RPCS3_DIR}/Utilities/StrFmt.cpp
++    ${RPCS3_DIR}/Utilities/Thread.cpp
++    ${RPCS3_DIR}/Utilities/version.cpp
++)
+ 
+-string(FIND "${CMAKE_C_FLAGS} ${CMAKE_CXX_FLAGS}" "-flto" FOUND_LTO)
+-if (NOT FOUND_LTO EQUAL -1)
+-    message(FATAL_ERROR "RPCS3 doesn't support building with LTO, use -DDISABLE_LTO=TRUE to force-disable it")
++file(GLOB SHIM_SOURCES CONFIGURE_DEPENDS "${RPCS3_SHIM_DIR}/*.cpp")
++list(FILTER SHIM_SOURCES EXCLUDE REGEX "/linktest_main\\.cpp$")
++# The port's C API over the RSX thread (libs/video/rpcs3_bridge)
++get_filename_component(R2RSX_BRIDGE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../libs/video/rpcs3_bridge" ABSOLUTE)
++if(EXISTS "${R2RSX_BRIDGE_DIR}/r2rsx_bridge.cpp")
++    list(APPEND SHIM_SOURCES "${R2RSX_BRIDGE_DIR}/r2rsx_bridge.cpp")
+ endif()
+ 
+-## Look for Gamemode if its installed on Linux
+-if(LINUX)
+-    ## User chooses whether to Enable GameMode features or not
+-    if(USE_GAMEMODE)
+-         add_compile_definitions(GAMEMODE_AVAILABLE)
+-    endif()
+-endif()
++add_library(rpcs3_rsx STATIC ${RSX_SOURCES} ${SUPPORT_SOURCES} ${SHIM_SOURCES})
++add_library(rpcs3::rsx ALIAS rpcs3_rsx)
+ 
+-# TODO: do real installation, including copying directory structure
+-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "${PROJECT_BINARY_DIR}/bin")
+-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG "${PROJECT_BINARY_DIR}/bin")
+-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${PROJECT_BINARY_DIR}/bin")
++target_compile_features(rpcs3_rsx PUBLIC cxx_std_23)
++set_target_properties(rpcs3_rsx PROPERTIES CXX_EXTENSIONS OFF)
+ 
+-if(BUILD_RPCS3_TESTS)
+-    enable_testing()
++target_include_directories(rpcs3_rsx
++    PUBLIC
++        "${RPCS3_SHIM_DIR}/include"
++        "${RPCS3_DIR}"
++        "${RPCS3_DIR}/rpcs3"
++        "${RPCS3_DIR}/3rdparty"
++        "${RPCS3_DIR}/3rdparty/glslang/glslang"
++        "${RPCS3_DIR}/3rdparty/GPUOpen/VulkanMemoryAllocator/include"
++        "${RPCS3_DIR}/3rdparty/stblib/stb"
++        "${RPCS3_DIR}/3rdparty/pugixml/src"
++)
++
++# R2PORT: FidelityFX API headers for temporal FSR 3.1 (tools/ffx_vk, AMD FidelityFX SDK 1.1.x, MIT)
++get_filename_component(R2PORT_FFX_INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}/../../../tools/ffx_vk/include" ABSOLUTE)
++if(EXISTS "${R2PORT_FFX_INCLUDE}/ffx_api/ffx_api.h")
++    target_include_directories(rpcs3_rsx PRIVATE "${R2PORT_FFX_INCLUDE}")
++    target_compile_definitions(rpcs3_rsx PRIVATE R2PORT_HAVE_FFX=1)
+ endif()
+-add_subdirectory(rpcs3)
+ 
+-set_directory_properties(PROPERTIES VS_STARTUP_PROJECT rpcs3)
++target_compile_definitions(rpcs3_rsx
++    PUBLIC
++        UNICODE _UNICODE
++        _WIN32_WINNT=0x0A00
++        NOMINMAX
++        _CRT_SECURE_NO_DEPRECATE=1 _CRT_NON_CONFORMING_SWPRINTFS=1 _SCL_SECURE_NO_WARNINGS=1
++        _ENABLE_EXTENDED_ALIGNED_STORAGE=1
++        _HAS_EXCEPTIONS=0
++        _SILENCE_CXX17_ITERATOR_BASE_CLASS_DEPRECATION_WARNING=1
++        YAML_CPP_STATIC_DEFINE
++        PUGIXML_HEADER_ONLY
++        RPCS3_R2PORT=1
++)
++
++target_compile_options(rpcs3_rsx PRIVATE
++    /utf-8
++    /wd4530 /wd4805 /wd4804 /wd4200
++    /clang:-fconstexpr-steps=16777216
++    /clang:-mcx16
++    # Only enables the intrinsics; RPCS3 gates their use on has_waitpkg()/has_waitx() at run time
++    /clang:-mwaitpkg /clang:-mmwaitx
++    -Wno-unused-lambda-capture
++    -Wno-unused-private-field
++    -Wno-unused-command-line-argument
++    -Wno-elaborated-enum-base
++    -Wno-unknown-pragmas
++    -Wno-deprecated-declarations
++    -Wno-microsoft-include
++    -Wno-unused-parameter
++    -Wno-unused-variable
++    -Wno-unused-function
++    -Wno-missing-field-initializers
++    -Wno-sign-compare
++    -Wno-unused-but-set-variable
++    -Wno-c++98-compat
++    -Wno-invalid-offsetof
++    -Wno-nontrivial-memcall
++    -Wno-character-conversion
++)
++
++# GL is not vendored: CgBinaryProgram only uses it for its GLSL disassembly view
++set_source_files_properties("${E}/RSX/Program/CgBinaryProgram.cpp" PROPERTIES COMPILE_DEFINITIONS WITHOUT_OPENGL)
++
++# yaml.cpp needs C++ exceptions (yaml-cpp reports parse errors by throwing)
++set_source_files_properties("${RPCS3_DIR}/rpcs3/util/yaml.cpp" PROPERTIES COMPILE_OPTIONS "/EHsc")
++
++target_link_libraries(rpcs3_rsx
++    PUBLIC
++        rpcs3_vulkan
++    PRIVATE
++        rpcs3_asmjit
++        glslang
++        SPIRV
++        glslang-default-resource-limits
++        yaml-cpp
++        pdh bcrypt dbghelp ntdll winmm shlwapi
++)
++# asmjit and glslang headers are used by public RPCS3 headers (Utilities/JIT.h, SPIRVCommon)
++target_include_directories(rpcs3_rsx PUBLIC "${ASMJIT_DIR}/src")
++target_compile_definitions(rpcs3_rsx PUBLIC ASMJIT_EMBED ASMJIT_STATIC ASMJIT_NO_DEPRECATED)
++
++if(RPCS3_RSX_BUILD_LINKTEST)
++    add_executable(rpcs3_rsx_linktest "${RPCS3_SHIM_DIR}/linktest_main.cpp")
++    target_compile_options(rpcs3_rsx_linktest PRIVATE /utf-8 -Wno-unused-variable)
++    target_link_libraries(rpcs3_rsx_linktest PRIVATE rpcs3_rsx)
++    target_link_options(rpcs3_rsx_linktest PRIVATE /STACK:8388608,1048576 /errorlimit:0)
++endif()
+diff --git a/README.port.md b/README.port.md
+new file mode 100644
+index 0000000..f1a340a
+--- /dev/null
++++ b/README.port.md
+@@ -0,0 +1,57 @@
++# Vendored RPCS3 RSX (Resistance 2 port)
++
++Origin: https://github.com/RPCS3/rpcs3 at commit `eee3f0f`, licensed GPLv2 (see `LICENSE`).
++Because of this code, the Resistance 2 port is distributed under the GPL.
++
++Files keep their original relative paths: `rpcs3/`, `Utilities/`, `3rdparty/`.
++**Every file here is unmodified unless it appears in the list below.**
++Edited lines are marked with `// R2PORT:`.
++
++## Modified vendored files
++
++| File | Change / reason |
++|---|---|
++| `rpcs3/util/types.hpp` | Under clang-cl, include `<intrin.h>`/`<immintrin.h>` instead of MSVC-only intrinsic forward declarations, which conflict with clang's builtins. |
++| `rpcs3/util/asm.hpp` | Inline-asm `_div128`/`_udiv128` for clang-cl, which lacks these MSVC intrinsics. |
++| `rpcs3/Emu/RSX/Common/BufferUtils_avx512.h` | The SIMD target-attribute guard is now `(_MSC_VER && !__clang__) \|\| !__SSE2__`, so clang-cl gets per-function `__attribute__((target))`. |
++| `rpcs3/Emu/RSX/Common/BufferUtils.cpp` | Same guard change for `SSE4_1_FUNC`/`AVX2_FUNC`/`AVX3_FUNC`. |
++| `rpcs3/Emu/Memory/vm.h` | `g_base_addr`/`g_sudo_addr` are declared as `u8* const&`. They are bound to the port runtime's `vm_base`/`vm_sudo_base`, which are set after static initialization. |
++
++## Not vendored / replaced (see `../rpcs3_shim`)
++
++- `rpcs3/Emu/RSX/GL/*`: excluded.
++- `rpcs3/Emu/System.cpp`: replaced by `emu_system_stub.cpp`.
++- `rpcs3/Emu/Memory/vm.cpp`: replaced by `vm_shim.cpp`.
++- `rpcs3/Emu/RSX/RSXRendererFactory.cpp`: replaced by `rsx_renderer_factory.cpp` (no GL).
++- NP overlays (friends, trophies, messages): excluded.
++- zlib, ffmpeg/swscale, wolfssl, git-version: shim headers in `rpcs3_shim/include`.
++- Vulkan loader: the import library is generated from `rpcs3_shim/vulkan/vulkan-1.def`; no SDK is needed at link time.
++
++Extra third-party code not in the RPCS3 submodule set:
++- `3rdparty/Vulkan-Headers` (v1.4.344)
++- `3rdparty/pugixml` (1.15)
++
++## Build (standalone)
++
++Run inside a VS 2022 x64 developer environment with LLVM on PATH:
++
++```
++cmake -S ps3recomp\third_party\rpcs3 -B build_rpcs3 -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
++cmake --build build_rpcs3 -j 8
++```
++
++Targets:
++- `rpcs3_rsx` (alias `rpcs3::rsx`): a static library.
++- `rpcs3_rsx_linktest`: a link check.
++
++The project can also be pulled in with `add_subdirectory(third_party/rpcs3)`.
++
++## Integration notes
++
++- The runtime must provide `extern "C" uint8_t* vm_base` and `vm_sudo_base`. `vm_sudo_base` is a second RW view of the same 4 GB.
++- Startup sequence:
++  1. Call `g_fxo->init()`, which resets and constructs the registered fxo objects.
++  2. Then call `rsx::create_render_thread(nullptr)`.
++  3. Set `g_emu_callbacks.get_gs_frame` before step 2.
++- `r2port::g_rsx_cache_dir` sets the shader cache dir. Leave it empty to disable the on-disk cache.
++- `rpcs3_shim/rsx_events_stub.cpp` holds `rsx::thread::send_event` and `sys_rsx_context_attribute`. Replace it with the real lv2 bridge.
+diff --git a/Utilities/Thread.cpp b/Utilities/Thread.cpp
+index 8f79b7c..8841044 100644
+--- a/Utilities/Thread.cpp
++++ b/Utilities/Thread.cpp
+@@ -2530,8 +2530,16 @@ static LONG exception_filter(PEXCEPTION_POINTERS pExp) noexcept
+ 	thread_ctrl::emergency_exit(msg);
+ }
+ 
++// R2PORT: the port runtime owns the process exception handlers (guest page commit,
++// guard pages, crash reports). Guest-memory faults reach rsx::g_access_violation_handler
++// through the runtime's g_vm_access_violation_hook, so RPCS3's handlers are not installed.
+ const bool s_exception_handler_set = []() -> bool
+ {
++	if (true)
++	{
++		return true;
++	}
++
+ #ifdef USE_ASAN
+ 	if (!AddVectoredExceptionHandler(FALSE, static_cast<PVECTORED_EXCEPTION_HANDLER>(exception_handler)))
+ #else
+diff --git a/rpcs3/Emu/Memory/vm.h b/rpcs3/Emu/Memory/vm.h
+index 9e8aa9e..1a1028f 100644
+--- a/rpcs3/Emu/Memory/vm.h
++++ b/rpcs3/Emu/Memory/vm.h
+@@ -30,8 +30,9 @@ namespace utils
+ 
+ namespace vm
+ {
+-	extern u8* const g_base_addr;
+-	extern u8* const g_sudo_addr;
++	// R2PORT: references bound to the port runtime's vm_base/vm_sudo_base (set after static init)
++	extern u8* const& g_base_addr;
++	extern u8* const& g_sudo_addr;
+ 	extern u8* const g_exec_addr;
+ 	extern u8* const g_stat_addr;
+ 	extern u8* const g_free_addr;
+@@ -243,7 +244,13 @@ namespace vm
+ 	// Unsafe convert host ptr to PS3 VM address (clamp with 4GiB alignment assumption)
+ 	inline vm::addr_t get_addr(const void* ptr)
+ 	{
+-		return vm::addr_t{static_cast<u32>(uptr(ptr))};
++		// R2PORT: the port's guest mappings are not 4 GiB aligned, so subtract the real base (sudo view too).
++		const u8* p = static_cast<const u8*>(ptr);
++		if (static_cast<u64>(p - g_base_addr) <= u64{u32{umax}} || !g_sudo_addr)
++		{
++			return vm::addr_t{static_cast<u32>(p - g_base_addr)};
++		}
++		return vm::addr_t{static_cast<u32>(p - g_sudo_addr)};
+ 	}
+ 
+ 	template<typename T> requires (std::is_integral_v<decltype(+T{})> && (sizeof(+T{}) > 4 || std::is_signed_v<decltype(+T{})>))
+diff --git a/rpcs3/Emu/RSX/Common/BufferUtils.cpp b/rpcs3/Emu/RSX/Common/BufferUtils.cpp
+index b8ee7b5..b82f11b 100644
+--- a/rpcs3/Emu/RSX/Common/BufferUtils.cpp
++++ b/rpcs3/Emu/RSX/Common/BufferUtils.cpp
+@@ -28,7 +28,8 @@
+ #endif
+ #endif
+ 
+-#if defined(_MSC_VER) || !defined(__SSE2__)
++// R2PORT: clang-cl defines _MSC_VER but, unlike MSVC, needs target attributes for AVX intrinsics
++#if (defined(_MSC_VER) && !defined(__clang__)) || !defined(__SSE2__)
+ #define SSE4_1_FUNC
+ #define AVX2_FUNC
+ #define AVX3_FUNC
+diff --git a/rpcs3/Emu/RSX/Common/BufferUtils_avx512.h b/rpcs3/Emu/RSX/Common/BufferUtils_avx512.h
+index b360209..02765bb 100644
+--- a/rpcs3/Emu/RSX/Common/BufferUtils_avx512.h
++++ b/rpcs3/Emu/RSX/Common/BufferUtils_avx512.h
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+-#if defined(_MSC_VER) || !defined(__SSE2__)
++// R2PORT: clang-cl defines _MSC_VER but, unlike MSVC, needs target attributes for AVX-512 intrinsics
++#if (defined(_MSC_VER) && !defined(__clang__)) || !defined(__SSE2__)
+ #define AVX512_SSE4_1_FUNC
+ #define AVX512_AVX3_FUNC
+ #define AVX512_ICL_FUNC
+diff --git a/rpcs3/Emu/RSX/Common/surface_store.h b/rpcs3/Emu/RSX/Common/surface_store.h
+index c2685c9..b9a138c 100644
+--- a/rpcs3/Emu/RSX/Common/surface_store.h
++++ b/rpcs3/Emu/RSX/Common/surface_store.h
+@@ -1174,6 +1174,18 @@ namespace rsx
+ 			return static_cast<u8>(m_bound_render_target_ids.size());
+ 		}
+ 
++		// R2PORT: replace the colour surface at an address with one of the same layout at another resolution scale
++		// (without binding it). The old surface becomes the new one's inherited contents.
++		template <typename ...Args>
++		surface_type r2_rescale_color_surface(command_list_type command_list, surface_type surface,
++			const rsx::surface_scaling_config_t& scaling_config, Args&&... extra_params)
++		{
++			cache_tag = rsx::get_shared_tag();
++			return bind_address_as_render_targets(command_list, surface->base_addr, surface->format_info.gcm_color_format,
++				surface->get_aa_mode(), surface->get_surface_width(), surface->get_surface_height(),
++				surface->get_rsx_pitch(), scaling_config, std::forward<Args>(extra_params)...);
++		}
++
+ 		surface_type get_surface_at(u32 address)
+ 		{
+ 			auto It = m_render_targets_storage.find(address);
+diff --git a/rpcs3/Emu/RSX/Common/texture_cache.cpp b/rpcs3/Emu/RSX/Common/texture_cache.cpp
+index 28d765f..24084a1 100644
+--- a/rpcs3/Emu/RSX/Common/texture_cache.cpp
++++ b/rpcs3/Emu/RSX/Common/texture_cache.cpp
+@@ -9,12 +9,32 @@
+ #include "texture_cache_helpers.h"
+ #include "texture_cache_blit_helpers.h"
+ 
++#ifdef _WIN32
++#include <windows.h>
++#endif
++
+ namespace rsx
+ {
+ 	constexpr u32 min_lockable_data_size = 4096; // Increasing this value has worse results even on systems with pages > 4k
+ 
+ 	namespace helpers = rsx::texture_cache_helpers;
+ 
++	// R2PORT: exe-relative backtrace to the RSX log (symbolize with cdb `ln Resistance2+0xOFF`); R2_DIAG=1 only
++	void r2port_log_backtrace(const char* tag)
++	{
++#ifdef _WIN32
++		static const bool diag = [] { const char* e = std::getenv("R2_DIAG"); return e && *e && *e != '0'; }(); // R2PORT
++		if (!diag) return; // R2PORT
++		void* frames[20];
++		const USHORT n = RtlCaptureStackBackTrace(1, 20, frames, nullptr);
++		const auto exe = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
++		std::string s;
++		for (USHORT i = 0; i < n; i++)
++			s += fmt::format(" +0x%llx", static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(frames[i]) - exe));
++		rsx_log.error("R2PORT %s backtrace:%s", tag, s);
++#endif
++	}
++
+ 	void buffered_section::init_lockable_range(const address_range32& range)
+ 	{
+ 		locked_range = range.to_page_range();
+@@ -25,6 +45,23 @@ namespace rsx
+ 
+ 	void buffered_section::reset(const address_range32& memory_range)
+ 	{
++		// R2PORT: diagnose instead of a bare ensure
++		if (!memory_range.valid() || locked)
++		{
++			rsx_log.error("R2PORT: buffered_section::reset bad state: range=[0x%x,0x%x] valid=%d locked=%d prot=%d cpu=[0x%x,0x%x]",
++				memory_range.start, memory_range.end, memory_range.valid(), locked, static_cast<int>(protection), cpu_range.start, cpu_range.end);
++#ifdef _WIN32
++			void* frames[24];
++			const USHORT n = RtlCaptureStackBackTrace(0, 24, frames, nullptr);
++			const auto exe = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
++			for (USHORT i = 0; i < n; i++)
++				rsx_log.error("R2PORT reset backtrace: +0x%llx", static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(frames[i]) - exe));
++#endif
++			if (locked && memory_range.valid())
++			{
++				protect(utils::protection::rw);
++			}
++		}
+ 		ensure(memory_range.valid() && locked == false);
+ 
+ 		cpu_range = address_range32(memory_range);
+diff --git a/rpcs3/Emu/RSX/Common/texture_cache.h b/rpcs3/Emu/RSX/Common/texture_cache.h
+index 2a88085..6ad809c 100644
+--- a/rpcs3/Emu/RSX/Common/texture_cache.h
++++ b/rpcs3/Emu/RSX/Common/texture_cache.h
+@@ -15,6 +15,7 @@
+ 
+ namespace rsx
+ {
++	void r2port_log_backtrace(const char* tag); // R2PORT diagnostic (texture_cache.cpp)
+ 	namespace helpers = rsx::texture_cache_helpers;
+ 
+ 	template <typename derived_type, typename _traits>
+@@ -1374,6 +1375,15 @@ namespace rsx
+ 		template <typename ...FlushArgs, typename ...Args>
+ 		section_storage_type* lock_memory_region_impl(commandbuffer_type& cmd, image_storage_type* image, const address_range32& rsx_range, bool is_active_surface, u16 width, u16 height, u32 pitch, Args&&... extras)
+ 		{
++			// R2PORT: surfaces with a degenerate memory range would trip buffered_section::reset and kill the RSX thread
++			if (!rsx_range.valid() || !width || !height)
++			{
++				rsx_log.warning("R2PORT: lock_memory_region_impl skipped invalid range [0x%x,0x%x] %ux%u pitch=%u", rsx_range.start, rsx_range.end, width, height, pitch);
++				static int s_bt_count = 0;
++				if (s_bt_count++ < 4) r2port_log_backtrace("lock_impl");
++				return nullptr;
++			}
++
+ 			// Find a cached section to use
+ 			image_section_attributes_t search_desc = { .gcm_format = RSX_GCM_FORMAT_IGNORED, .width = width, .height = height };
+ 			section_storage_type& region = *find_cached_texture(rsx_range, search_desc, true, true, false);
+@@ -1676,7 +1686,7 @@ namespace rsx
+ 				u8 dst_bpp,
+ 				const address_range32& dst_range,
+ 				const GCM_tile_reference& dst_tile,
+-				const position2i& dst_offset,
++				const position2i& dst_offset_in,
+ 				u32 preferred_dst_format,
+ 				bool src_is_render_target,
+ 				bool dst_is_argb8,
+@@ -1692,6 +1702,7 @@ namespace rsx
+ 				Args&&... extras)
+ 			{
+ 				ensure(!dest_texture);
++				position2i dst_offset = dst_offset_in;
+ 
+ 				// Need to calculate the minimum required size that will fit the data, anchored on the rsx_address
+ 				// If the application starts off with an 'inseted' section, the guessed dimensions may not fit!
+@@ -1725,6 +1736,33 @@ namespace rsx
+ 				const u32 usable_section_length = std::max(write_end, block_end) - dst_base_address;
+ 				dst_dimensions.height = align2(usable_section_length, dst.pitch) / dst.pitch;
+ 
++				// R2PORT: a stale/guessed base (props.offset / pitch-conflict path) can be hundreds of MB below the actual write,
++				// producing absurd heights that exceed GPU limits or create surfaces not even covering the write. Rebase onto the blit's own address.
++				if (dst_dimensions.height <= 0)
++				{
++					// R2PORT: never create a 0-row surface (fatal later); cover at least the write.
++					const u32 need = (write_end > dst_base_address) ? (write_end - dst_base_address) : dst_payload_length;
++					dst_dimensions.height = std::max<s32>(1, static_cast<s32>(align2(need, dst.pitch) / dst.pitch));
++					rsx_log.warning("R2PORT: blit dst height 0 forced to %d (base 0x%x dst=0x%x pitch=%u)", dst_dimensions.height, dst_base_address, dst_address, dst.pitch);
++				}
++
++				if (dst_dimensions.height > 4096)
++				{
++					const int bad_height = dst_dimensions.height;
++					const u32 bad_base = dst_base_address;
++					dst_base_address = dst.rsx_address;
++					dst_offset = { dst.offset_x, dst.offset_y };
++					if (write_end <= dst_base_address || (write_end - dst_base_address) / dst.pitch >= 4096)
++					{
++						dst_base_address = dst_address;
++						dst_offset = { 0, 0 };
++					}
++					dst_dimensions.width = std::min<s32>(dst_dimensions.width, static_cast<s32>(dst.pitch / dst_bpp));
++					dst_dimensions.height = align2(write_end - dst_base_address, dst.pitch) / dst.pitch;
++					rsx_log.warning("R2PORT: blit dst height %d (base 0x%x) rebased to base 0x%x height %d (dst=0x%x pitch=%u payload=0x%x)",
++						bad_height, bad_base, dst_base_address, dst_dimensions.height, dst_address, dst.pitch, dst_payload_length);
++				}
++
+ 				const u32 full_section_length = ((dst_dimensions.height - 1) * dst.pitch) + (dst_dimensions.width * dst_bpp);
+ 				const auto rsx_range = address_range32::start_length(dst_base_address, full_section_length);
+ 
+@@ -2032,6 +2070,12 @@ namespace rsx
+ 
+ 			std::lock_guard lock(m_cache_mutex);
+ 
++			if (!rsx_range.valid()) // R2PORT: degenerate surface range (e.g. zero pitch/height); nothing to lock
++			{
++				rsx_log.warning("R2PORT: lock_memory_region skipped invalid range [0x%x,0x%x] %ux%u pitch=%u", rsx_range.start, rsx_range.end, width, height, pitch);
++				return;
++			}
++
+ 			lock_memory_region_impl(cmd, image, rsx_range, is_active_surface, width, height, pitch, std::forward<Args>(extras)...);
+ 		}
+ 
+@@ -3382,6 +3426,14 @@ namespace rsx
+ 			u16 dst_w = dst.clip_width;
+ 			u16 dst_h = dst.clip_height;
+ 
++			// R2PORT: degenerate blits (zero clip or a source that scales down to 0 rows/cols) create 0-height surfaces
++			// with an invalid memory range, which later kill the RSX thread when sampled. Nothing to copy; drop them.
++			if (!dst_w || !dst_h || !src_w || !src_h)
++			{
++				rsx_log.warning("R2PORT: dropping degenerate blit src=%ux%u dst=%ux%u (dst=0x%x pitch=%u)", src_w, src_h, dst_w, dst_h, dst_address, dst.pitch);
++				return true;
++			}
++
+ 			blit_engine_helpers::apply_pixel_transforms(src, dst, typeless_info, src_address, src_w, src_h, src_bpp);
+ 
+ 			const auto get_tiled_region = [&](const utils::address_range32& range)
+@@ -3409,6 +3461,21 @@ namespace rsx
+ 			dst_subres = blit_engine_internals::rtt_lookup(m_rtts, cmd, dst_address, dst_w, dst_h, dst.pitch, dst_bpp, surface_access::transfer_write, false, scale_x, scale_y);
+ 			dst_is_render_target = dst_subres.surface != nullptr;
+ 
++			// R2PORT: an existing render target that is too small to hold the blit would clip the write
++			// (e.g. 640x352 DOF downsample landing in a stale 640x120 / 640x0 RT); create a proper blit target instead.
++			// NOTE: rtt_lookup's src_area is already clipped to the surface, so compare against the requested height.
++			if (dst_is_render_target &&
++				(dst_subres.src_area.y + dst_h) > (dst_subres.surface->template get_surface_height<rsx::surface_metrics::samples>()))
++			{
++				rsx_log.warning("R2PORT: blit dst RT 0x%x too small (%ux%u) for area (%u,%u) %ux%u; not reusing",
++					dst_address,
++					dst_subres.surface->template get_surface_width<rsx::surface_metrics::samples>(),
++					dst_subres.surface->template get_surface_height<rsx::surface_metrics::samples>(),
++					dst_subres.src_area.x, dst_subres.src_area.y, dst_subres.src_area.width, dst_subres.src_area.height);
++				dst_is_render_target = false;
++				dst_subres = {};
++			}
++
+ 			if (!dst_is_render_target && get_location(dst_address) != CELL_GCM_LOCATION_LOCAL)
+ 			{
+ 				// Surface only exists in main memory.
+diff --git a/rpcs3/Emu/RSX/Common/texture_cache_helpers.h b/rpcs3/Emu/RSX/Common/texture_cache_helpers.h
+index b97a7a7..5545fe1 100644
+--- a/rpcs3/Emu/RSX/Common/texture_cache_helpers.h
++++ b/rpcs3/Emu/RSX/Common/texture_cache_helpers.h
+@@ -896,7 +896,9 @@ namespace rsx
+ 			}
+ 
+ 			// If this method was called, there is no easy solution, likely means atlas gather is needed
+-			const auto& scaling_config = rsx::get_current_renderer()->resolution_scaling_config;
++			// R2PORT: size the gathered image with the source surfaces' own scale (they are copied with it above), not the
++			// global one; the upscaler renders the scene at a reduced scale while the rest of the frame stays at full scale
++			const auto& scaling_config = fbos.empty() ? rsx::get_current_renderer()->resolution_scaling_config : fbos.back().surface->resolution_scaling_config;
+ 			const auto [scaled_w, scaled_h] = rsx::apply_resolution_scale(scaling_config, attr2.width, attr2.height);
+ 			const auto format_class = classify_format(attr2.gcm_format);
+ 			const auto upload_context = (fbos.empty()) ? texture_upload_context::shader_read : texture_upload_context::framebuffer_storage;
+diff --git a/rpcs3/Emu/RSX/Common/texture_cache_utils.h b/rpcs3/Emu/RSX/Common/texture_cache_utils.h
+index 797ca56..3cdbfde 100644
+--- a/rpcs3/Emu/RSX/Common/texture_cache_utils.h
++++ b/rpcs3/Emu/RSX/Common/texture_cache_utils.h
+@@ -1125,7 +1125,10 @@ namespace rsx
+ 		void reset(const address_range32& memory_range)
+ 		{
+ 			AUDIT(memory_range.valid());
+-			AUDIT(!is_locked());
++			if (is_locked()) // R2PORT: release page protection instead of failing ensure(!locked) in buffered_section::reset
++			{
++				unprotect();
++			}
+ 
+ 			// Destroy if necessary
+ 			destroy();
+diff --git a/rpcs3/Emu/RSX/Core/RSXDisplayEngine.cpp b/rpcs3/Emu/RSX/Core/RSXDisplayEngine.cpp
+index 4176076..397d172 100644
+--- a/rpcs3/Emu/RSX/Core/RSXDisplayEngine.cpp
++++ b/rpcs3/Emu/RSX/Core/RSXDisplayEngine.cpp
+@@ -14,6 +14,9 @@
+ #include "util/asm.hpp"
+ #include "util/serialization.hpp"
+ 
++// R2PORT: guest handlers (flip/vblank/user/queue) run on the port runtime's GCM interrupt thread.
++extern "C" void r2port_rsx_guest_call(u32 opd, u32 arg);
++
+ extern atomic_t<u32> g_lv2_preempts_taken;
+ 
+ LOG_CHANNEL(perf_log, "PERF");
+@@ -225,15 +228,7 @@ namespace rsx
+ 
+ 			if (auto ptr = m_pump->flip_handler)
+ 			{
+-				m_pump->intr_thread->cmd_list
+-				({
+-					{ ppu_cmd::set_args, 1 }, u64{ 1 },
+-					{ ppu_cmd::lle_call, ptr },
+-					{ ppu_cmd::sleep, 0 }
+-				});
+-
+-				m_pump->intr_thread->cmd_notify.store(1);
+-				m_pump->intr_thread->cmd_notify.notify_one();
++				r2port_rsx_guest_call(ptr.addr(), static_cast<u32>(1)); // R2PORT
+ 			}
+ 		}
+ 	}
+@@ -297,15 +292,7 @@ namespace rsx
+ 		{
+ 			if (auto ptr = m_pump->vblank_handler)
+ 			{
+-				m_pump->intr_thread->cmd_list
+-				({
+-					{ ppu_cmd::set_args, 1 }, u64{1},
+-					{ ppu_cmd::lle_call, ptr },
+-					{ ppu_cmd::sleep, 0 }
+-				});
+-
+-				m_pump->intr_thread->cmd_notify.store(1);
+-				m_pump->intr_thread->cmd_notify.notify_one();
++				r2port_rsx_guest_call(ptr.addr(), static_cast<u32>(1)); // R2PORT
+ 			}
+ 		}
+ 		else
+diff --git a/rpcs3/Emu/RSX/VK/VKDraw.cpp b/rpcs3/Emu/RSX/VK/VKDraw.cpp
+index 2c736de..8bfa6a0 100644
+--- a/rpcs3/Emu/RSX/VK/VKDraw.cpp
++++ b/rpcs3/Emu/RSX/VK/VKDraw.cpp
+@@ -1292,6 +1292,7 @@ bool VKGSRender::resolve_sampler_state(rsx::flags32_t& invalidated_programs)
+ 		m_current_frame->flags &= ~frame_context_state::dirty;
+ 	}
+ 
++	r2aa_check_texture_reads(); // R2PORT: anti-alias the scene before post-processing samples it
+ 	invalidated_programs = load_texture_env();
+ 	return true;
+ }
+diff --git a/rpcs3/Emu/RSX/VK/VKGSRender.cpp b/rpcs3/Emu/RSX/VK/VKGSRender.cpp
+index b101a27..3b19418 100644
+--- a/rpcs3/Emu/RSX/VK/VKGSRender.cpp
++++ b/rpcs3/Emu/RSX/VK/VKGSRender.cpp
+@@ -2042,8 +2042,9 @@ void VKGSRender::load_program_env()
+ 
+ 	const bool update_transform_constants = m_stale_constants.test(rsx::draw_state_t::group::transform_constants);
+ 	const bool update_fragment_constants = m_stale_constants.test(rsx::draw_state_t::group::fragment_constants);
+-	const bool update_vertex_env = m_ctx->draw_state.dirty.test(rsx::draw_state_t::group::vertex_env);
+-	const bool update_fragment_env = m_ctx->draw_state.dirty.test(rsx::draw_state_t::group::fragment_env);
++	const int r2aa_force_env = r2aa_on_draw(); // R2PORT: FSR 3.1 / DLSS scene tracking, jitter and reduced-resolution scene draws
++	const bool update_vertex_env = (r2aa_force_env & 1) || m_ctx->draw_state.dirty.test(rsx::draw_state_t::group::vertex_env);
++	const bool update_fragment_env = (r2aa_force_env & 2) || m_ctx->draw_state.dirty.test(rsx::draw_state_t::group::fragment_env); // R2PORT
+ 	const bool update_fragment_texture_env = m_ctx->draw_state.dirty.test(rsx::draw_state_t::group::fragment_texture_env);
+ 	const bool update_instruction_buffers = (m_interpreter_state.test(rsx::draw_state_t::group::programs) && is_interpreter);
+ 	const bool update_raster_env = (m_ctx->draw_state.stipple.enabled && m_ctx->draw_state.dirty.test(rsx::draw_state_t::group::stipple));
+@@ -2057,6 +2058,7 @@ void VKGSRender::load_program_env()
+ 		auto buf = m_vertex_env_ring_info.map<char>(mem, 96);
+ 
+ 		RSX(m_ctx)->draw_processor()->fill_vertex_env(buf, RSX(m_ctx)->resolution_scaling_config.scale_factor());
++		r2aa_patch_vertex_env(buf); // R2PORT: sub-pixel jitter for FSR 3.1 / DLAA
+ 
+ 		m_vertex_env_ring_info.unmap();
+ 		m_vertex_env_dynamic_offset = mem;
+@@ -2536,6 +2538,7 @@ bool VKGSRender::on_framebuffer_bound(const rsx::framebuffer_layout& layout)
+ 		return true;
+ 	}
+ 
++	r2aa_before_bind(m_ctx->fb.layout.color_addresses[0], m_ctx->fb.layout.zeta_address); // R2PORT: AA the scene before its targets are unbound/replaced
+ 	res()->surface_cache.prepare_render_target(*m_current_command_buffer,
+ 		m_ctx->fb.layout.color_format, m_ctx->fb.layout.depth_format,
+ 		m_ctx->fb.layout.width, m_ctx->fb.layout.height,
+@@ -2758,6 +2761,7 @@ bool VKGSRender::on_renderctl(u32 request_code, void* args)
+ 
+ bool VKGSRender::scaled_image_from_memory(const rsx::blit_src_info& src, const rsx::blit_dst_info& dst, bool interpolate)
+ {
++	r2aa_check_read(src.rsx_address); // R2PORT: anti-alias the scene before it is copied
+ 	if (res()->texture_cache.blit(src, dst, interpolate, res()->surface_cache, *m_current_command_buffer))
+ 	{
+ 		m_samplers_dirty.store(true);
+diff --git a/rpcs3/Emu/RSX/VK/VKGSRender.h b/rpcs3/Emu/RSX/VK/VKGSRender.h
+index 07a6b7d..a043595 100644
+--- a/rpcs3/Emu/RSX/VK/VKGSRender.h
++++ b/rpcs3/Emu/RSX/VK/VKGSRender.h
+@@ -267,6 +267,17 @@ private:
+ 	static vk::context_resources* res(rsx::context* ctx) { return static_cast<vk::context_resources*>(ctx->resources.get()); }
+ 	vk::context_resources* res() const { return res(m_ctx); }
+ 
++	// R2PORT: temporal FSR 3.1 / DLSS anti-aliasing of the 3D scene (VKR2Upscaler.cpp). All no-ops unless RSX_FSR > 0.
++	int r2aa_on_draw();                        // load_program_env: classify the draw; bit 0/1 = force a vertex/fragment env refill
++	void r2aa_patch_vertex_env(void* env);     // load_program_env: jitter the freshly filled scale/offset
++	void r2aa_check_texture_reads();           // resolve_sampler_state: the scene is about to be sampled
++	void r2aa_check_read(u32 address);         // a blit is about to read 'address'
++	void r2aa_before_bind(u32 color0, u32 zeta); // on_framebuffer_bound: the scene targets are about to be unbound; switches the resolution scale of the scene section
++	void r2aa_writeback();                     // r2aa_before_bind: write the upscaled scene into a new full-resolution scene surface
++	void r2aa_on_flip();                       // present_frame: last chance this frame, then pick next frame's scene
++	void r2aa_set_section(bool on);            // switch the RPCS3 resolution scale for the scene section (upscaling)
++	void r2aa_run();
++
+ public:
+ 	void set_viewport();
+ 	void set_scissor();
+diff --git a/rpcs3/Emu/RSX/VK/VKPresent.cpp b/rpcs3/Emu/RSX/VK/VKPresent.cpp
+index 4afff84..d91eeb2 100644
+--- a/rpcs3/Emu/RSX/VK/VKPresent.cpp
++++ b/rpcs3/Emu/RSX/VK/VKPresent.cpp
+@@ -440,6 +440,11 @@ bool VKGSRender::present_frame(const rsx::display_flip_info_t& info)
+ 		return false;
+ 	}
+ 
++	if (info.emu_flip)
++	{
++		r2aa_on_flip(); // R2PORT: finish FSR 3.1 / DLAA for this frame, pick next frame's scene and jitter
++	}
++
+ 	if (!info.emu_flip)
+ 	{
+ 		// Native UI flips are requested from the local task. Submit outstanding work first.
+diff --git a/rpcs3/Emu/RSX/VK/VKR2Upscaler.cpp b/rpcs3/Emu/RSX/VK/VKR2Upscaler.cpp
+new file mode 100644
+index 0000000..bac031e
+--- /dev/null
++++ b/rpcs3/Emu/RSX/VK/VKR2Upscaler.cpp
+@@ -0,0 +1,1848 @@
++// R2PORT: Resistance 2 port addition (not upstream RPCS3). See VKR2Upscaler.h.
++//
++// How it works (all inert unless RSX_FSR=1/2):
++//  * Scene detection: every draw is tallied by (colour target, depth target). At each flip the pair with
++//    the most depth-tested draws becomes next frame's "scene".
++//  * Jitter: draws into the scene depth buffer get a Halton(2,3) sub-pixel offset added to the viewport
++//    offset of RPCS3's scale_offset matrix (vertex env), so no shader changes are needed.
++//  * Motion: the RSX vertex program of scene draws is run on the CPU for 4 basis points to get its
++//    affine object->clip matrix M. For each draw also seen last frame, R = M_prev * M_cur^-1; the most
++//    common R (static geometry) is the camera motion. A compute pass turns depth + R into motion vectors.
++//  * The upscaler (FSR 3.1 or DLAA, native resolution) runs when the scene colour is first read
++//    (post-processing / blit) or at flip, and its result is copied back into the scene colour target.
++
++#include "stdafx.h"
++#include "VKR2Upscaler.h"
++#include "VKGSRender.h"
++#include "VKCompute.h"
++#include "VKHelpers.h"
++#include "VKRenderPass.h"
++#include "VKResourceManager.h"
++#include "vkutils/barriers.h"
++#include "vkutils/sampler.h"
++
++#include "Emu/RSX/rsx_methods.h"
++#include "Emu/RSX/NV47/HW/context_accessors.define.h"
++
++#ifdef R2PORT_HAVE_FFX
++#include "ffx_api/ffx_api.h"
++#include "ffx_api/ffx_upscale.h"
++#include "ffx_api/vk/ffx_api_vk.h"
++#endif
++
++#include <cstdarg>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <cmath>
++#include <algorithm>
++#include <chrono>
++#include <string>
++#include <unordered_map>
++
++#ifdef _WIN32
++#include <windows.h>
++#endif
++
++extern bool g_r2_trace_now;
++
++namespace
++{
++	void r2log(const char* fmt, ...)
++	{
++		char buf[1024];
++		va_list ap;
++		va_start(ap, fmt);
++		std::vsnprintf(buf, sizeof(buf), fmt, ap);
++		va_end(ap);
++		std::printf("[r2aa] %s\n", buf);
++		std::fflush(stdout);
++	}
++
++	struct r2aa_settings
++	{
++		int mode = 0;          // 0 off, 1 FSR 3.1, 2 DLAA
++		float sharpness = 0.f; // RSX_SHARPEN 0..1
++		float upscale = 1.f;   // RSX_UPSCALE: scene render scale (1 = native AA, <1 = upscaling)
++		float jsign = 1.f;     // RSX_AA_JITTER_SIGN=-1 flips the jitter handed to FSR/DLSS
++		unsigned preset = 0;   // RSX_DLSS_PRESET
++		int phases = 8;
++		bool debug = false;    // RSX_AA_DEBUG=1: more logging
++		int trace = 0;         // RSX_AA_TRACE=N: dump every draw of every N-th frame (pass structure analysis)
++		int view = 0;          // RSX_AA_DEBUG_VIEW=1: show |AA - input| x8; 2: left half input, right half AA
++		bool mask = true;      // RSX_DLSS_MASK=0: no moving-object mask (DLSS bias-current-colour)
++	};
++
++	const r2aa_settings& r2cfg()
++	{
++		static const r2aa_settings s = []
++		{
++			r2aa_settings r;
++			if (const char* e = std::getenv("RSX_FSR")) r.mode = std::atoi(e);
++			if (r.mode < 0 || r.mode > 2) r.mode = 0;
++			if (const char* e = std::getenv("RSX_SHARPEN")) r.sharpness = static_cast<float>(std::atof(e));
++			r.sharpness = std::fmin(std::fmax(r.sharpness, 0.f), 1.f);
++			if (const char* e = std::getenv("RSX_UPSCALE")) r.upscale = static_cast<float>(std::atof(e));
++			if (!(r.upscale > 0.f) || r.upscale > 0.995f) r.upscale = 1.f;
++			r.upscale = std::fmax(r.upscale, 0.25f);
++			if (const char* e = std::getenv("RSX_AA_JITTER_SIGN")) r.jsign = std::atof(e) < 0 ? -1.f : 1.f;
++			if (const char* e = std::getenv("RSX_DLSS_PRESET")) r.preset = static_cast<unsigned>(std::atoi(e));
++			if (const char* e = std::getenv("RSX_AA_PHASES")) r.phases = std::max(1, std::min(64, std::atoi(e)));
++			if (const char* e = std::getenv("RSX_AA_DEBUG")) r.debug = std::atoi(e) != 0;
++			if (const char* e = std::getenv("RSX_AA_TRACE")) r.trace = std::max(0, std::atoi(e));
++			if (const char* e = std::getenv("RSX_AA_DEBUG_VIEW")) r.view = std::atoi(e);
++			if (const char* e = std::getenv("RSX_DLSS_MASK")) r.mask = std::atoi(e) != 0;
++			if (r.mode)
++			{
++				if (r.upscale < 1.f) r.phases = std::max(r.phases, static_cast<int>(std::ceil(8.f / (r.upscale * r.upscale))));
++				r2log("mode %s, scene render scale %.0f%%, sharpen %.2f, %d jitter phases", r.mode == 2 ? "DLSS (FSR 3.1 fallback)" : "FSR 3.1",
++					r.upscale * 100.f, r.sharpness, r.phases);
++			}
++			return r;
++		}();
++		return s;
++	}
++
++	std::wstring exe_dir()
++	{
++		wchar_t path[MAX_PATH] = {};
++		const DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
++		std::wstring s(path, n);
++		const auto slash = s.find_last_of(L"\\/");
++		return slash == std::wstring::npos ? std::wstring(L".") : s.substr(0, slash);
++	}
++
++	// ---- small double-precision 4x4 math (row-major m[row][col]) ----
++	struct m4
++	{
++		double m[4][4];
++	};
++
++	m4 m4_identity()
++	{
++		m4 r{};
++		for (int i = 0; i < 4; ++i) r.m[i][i] = 1.0;
++		return r;
++	}
++
++	m4 m4_mul(const m4& a, const m4& b)
++	{
++		m4 r{};
++		for (int i = 0; i < 4; ++i)
++			for (int j = 0; j < 4; ++j)
++			{
++				double s = 0;
++				for (int k = 0; k < 4; ++k) s += a.m[i][k] * b.m[k][j];
++				r.m[i][j] = s;
++			}
++		return r;
++	}
++
++	bool m4_inverse(const m4& in, m4& out)
++	{
++		double a[4][8];
++		double scale = 0;
++		for (int i = 0; i < 4; ++i)
++			for (int j = 0; j < 4; ++j)
++			{
++				a[i][j] = in.m[i][j];
++				a[i][j + 4] = i == j ? 1.0 : 0.0;
++				scale = std::fmax(scale, std::fabs(in.m[i][j]));
++			}
++		if (!(scale > 0) || !std::isfinite(scale)) return false;
++		for (int c = 0; c < 4; ++c)
++		{
++			int p = c;
++			for (int r = c + 1; r < 4; ++r)
++				if (std::fabs(a[r][c]) > std::fabs(a[p][c])) p = r;
++			if (std::fabs(a[p][c]) < 1e-9 * scale) return false;
++			if (p != c)
++				for (int j = 0; j < 8; ++j) std::swap(a[p][j], a[c][j]);
++			const double inv = 1.0 / a[c][c];
++			for (int j = 0; j < 8; ++j) a[c][j] *= inv;
++			for (int r = 0; r < 4; ++r)
++			{
++				if (r == c) continue;
++				const double f = a[r][c];
++				if (f == 0) continue;
++				for (int j = 0; j < 8; ++j) a[r][j] -= f * a[c][j];
++			}
++		}
++		for (int i = 0; i < 4; ++i)
++			for (int j = 0; j < 4; ++j) out.m[i][j] = a[i][j + 4];
++		return true;
++	}
++
++	double m4_maxabs(const m4& a)
++	{
++		double r = 0;
++		for (auto& row : a.m) for (double v : row) r = std::fmax(r, std::fabs(v));
++		return r;
++	}
++
++	double m4_maxdiff(const m4& a, const m4& b)
++	{
++		double r = 0;
++		for (int i = 0; i < 4; ++i) for (int j = 0; j < 4; ++j) r = std::fmax(r, std::fabs(a.m[i][j] - b.m[i][j]));
++		return r;
++	}
++
++	// Screen transform of the vertex env: (sx,ox,sy,oy,sz,oz) -> 4x4 applied to the raw clip position
++	struct screen_xform
++	{
++		float sx = 1, ox = 0, sy = 1, oy = 0, sz = 1, oz = 0, n = 0, f = 1;
++		bool valid = false;
++	};
++
++	m4 m4_screen(const screen_xform& s)
++	{
++		m4 r{};
++		r.m[0][0] = s.sx; r.m[0][3] = s.ox;
++		r.m[1][1] = s.sy; r.m[1][3] = s.oy;
++		r.m[2][2] = s.sz; r.m[2][3] = s.oz;
++		r.m[3][3] = 1.0;
++		return r;
++	}
++
++	// ---- RSX vertex program interpreter (enough to evaluate the position output) ----
++	bool vp_run(const RSXVertexProgram& vp, const float* consts, u32 branch_bits, const float in0[4], float out_pos[4])
++	{
++		static const float zero[4] = {};
++		float r[64][4] = {};
++		float o[16][4] = {};
++		for (auto& v : o) v[3] = 1.f;
++		int a[2][4] = {};
++		u32 stack[8];
++		int sp = 0;
++
++		const auto& data = vp.data;
++		const u32 count = static_cast<u32>(data.size() / 4);
++		u32 pc = vp.entry - vp.base_address;
++
++		for (int steps = 0; steps < 2048; ++steps)
++		{
++			if (pc >= count) return false;
++
++			D0 d0; D1 d1; D2 d2; D3 d3;
++			d0.HEX = data[pc * 4 + 0];
++			d1.HEX = data[pc * 4 + 1];
++			d2.HEX = data[pc * 4 + 2];
++			d3.HEX = data[pc * 4 + 3];
++
++			SRC src[3];
++			for (auto& s : src) s.HEX = 0;
++			src[0].src0l = d2.src0l;
++			src[0].src0h = d1.src0h;
++			src[1].src1 = d2.src1;
++			src[2].src2l = d3.src2l;
++			src[2].src2h = d2.src2h;
++
++			if (!src[0].reg_type || !src[1].reg_type || !src[2].reg_type)
++			{
++				break; // RPCS3 treats this as the end of the program
++			}
++
++			auto fetch = [&](int n, float v[4])
++			{
++				const SRC& s = src[n];
++				const float* p = zero;
++				switch (s.reg_type)
++				{
++				case RSX_VP_REGISTER_TYPE_TEMP: p = r[s.tmp_src]; break;
++				case RSX_VP_REGISTER_TYPE_INPUT: p = d1.input_src == 0 ? in0 : zero; break;
++				case RSX_VP_REGISTER_TYPE_CONSTANT:
++					if (!d3.index_const)
++					{
++						p = d1.const_src < 468 ? consts + d1.const_src * 4 : zero;
++					}
++					else
++					{
++						const int idx = (a[d0.addr_reg_sel_1][d0.addr_swz] + static_cast<int>(d1.const_src)) & 511;
++						p = consts + idx * 4;
++					}
++					break;
++				default: break;
++				}
++				const u32 sw[4] = { s.swz_x, s.swz_y, s.swz_z, s.swz_w };
++				const bool abs_ = n == 0 ? d0.src0_abs : n == 1 ? d0.src1_abs : d0.src2_abs;
++				for (int i = 0; i < 4; ++i)
++				{
++					float x = p[sw[i]];
++					if (abs_) x = std::fabs(x);
++					if (s.neg) x = -x;
++					v[i] = x;
++				}
++			};
++
++			const u32 vop = d1.vec_opcode;
++			const u32 sop = d1.sca_opcode;
++			if (vop == RSX_VEC_OPCODE_TXL) return false;
++			if (d0.cond_test_enable && d0.cond != 7) return false; // condition-code tests are not interpreted
++
++			float s0[4], s1[4], s2[4];
++			fetch(0, s0); fetch(1, s1); fetch(2, s2);
++
++			float vr[4] = {};
++			bool vwrite = vop != RSX_VEC_OPCODE_NOP;
++			auto cmp = [&](auto op) { for (int i = 0; i < 4; ++i) vr[i] = op(s0[i], s1[i]) ? 1.f : 0.f; };
++			switch (vop)
++			{
++			case RSX_VEC_OPCODE_NOP: break;
++			case RSX_VEC_OPCODE_MOV: for (int i = 0; i < 4; ++i) vr[i] = s0[i]; break;
++			case RSX_VEC_OPCODE_MUL: for (int i = 0; i < 4; ++i) vr[i] = s0[i] * s1[i]; break;
++			case RSX_VEC_OPCODE_ADD: for (int i = 0; i < 4; ++i) vr[i] = s0[i] + s2[i]; break;
++			case RSX_VEC_OPCODE_MAD: for (int i = 0; i < 4; ++i) vr[i] = s0[i] * s1[i] + s2[i]; break;
++			case RSX_VEC_OPCODE_DP3: { const float d = s0[0] * s1[0] + s0[1] * s1[1] + s0[2] * s1[2]; for (float& x : vr) x = d; break; }
++			case RSX_VEC_OPCODE_DPH: { const float d = s0[0] * s1[0] + s0[1] * s1[1] + s0[2] * s1[2] + s1[3]; for (float& x : vr) x = d; break; }
++			case RSX_VEC_OPCODE_DP4: { const float d = s0[0] * s1[0] + s0[1] * s1[1] + s0[2] * s1[2] + s0[3] * s1[3]; for (float& x : vr) x = d; break; }
++			case RSX_VEC_OPCODE_DST: vr[0] = 1.f; vr[1] = s0[1] * s1[1]; vr[2] = s0[2]; vr[3] = s1[3]; break;
++			case RSX_VEC_OPCODE_MIN: for (int i = 0; i < 4; ++i) vr[i] = std::fmin(s0[i], s1[i]); break;
++			case RSX_VEC_OPCODE_MAX: for (int i = 0; i < 4; ++i) vr[i] = std::fmax(s0[i], s1[i]); break;
++			case RSX_VEC_OPCODE_SLT: cmp([](float x, float y) { return x < y; }); break;
++			case RSX_VEC_OPCODE_SGE: cmp([](float x, float y) { return x >= y; }); break;
++			case RSX_VEC_OPCODE_SEQ: cmp([](float x, float y) { return x == y; }); break;
++			case RSX_VEC_OPCODE_SGT: cmp([](float x, float y) { return x > y; }); break;
++			case RSX_VEC_OPCODE_SLE: cmp([](float x, float y) { return x <= y; }); break;
++			case RSX_VEC_OPCODE_SNE: cmp([](float x, float y) { return x != y; }); break;
++			case RSX_VEC_OPCODE_SFL: break;
++			case RSX_VEC_OPCODE_STR: for (float& x : vr) x = 1.f; break;
++			case RSX_VEC_OPCODE_SSG: for (int i = 0; i < 4; ++i) vr[i] = s0[i] > 0 ? 1.f : s0[i] < 0 ? -1.f : 0.f; break;
++			case RSX_VEC_OPCODE_FRC: for (int i = 0; i < 4; ++i) vr[i] = s0[i] - std::floor(s0[i]); break;
++			case RSX_VEC_OPCODE_FLR: for (int i = 0; i < 4; ++i) vr[i] = std::floor(s0[i]); break;
++			case RSX_VEC_OPCODE_ARL: for (int i = 0; i < 4; ++i) vr[i] = s0[i]; break;
++			default: return false;
++			}
++
++			float sr[4] = {};
++			bool swrite = true;
++			const float sx = s2[0];
++			switch (sop)
++			{
++			case RSX_SCA_OPCODE_MOV: for (int i = 0; i < 4; ++i) sr[i] = s2[i]; break;
++			case RSX_SCA_OPCODE_RCP: for (int i = 0; i < 4; ++i) sr[i] = 1.f / s2[i]; break;
++			case RSX_SCA_OPCODE_RCC: for (int i = 0; i < 4; ++i) sr[i] = std::fmin(std::fmax(1.f / s2[i], 5.42101e-20f), 1.884467e19f); break;
++			case RSX_SCA_OPCODE_RSQ: { const float v = 1.f / std::sqrt(std::fmax(std::fabs(sx), 1e-38f)); for (float& x : sr) x = v; break; }
++			case RSX_SCA_OPCODE_EXP: for (int i = 0; i < 4; ++i) sr[i] = std::exp(s2[i]); break;
++			case RSX_SCA_OPCODE_LOG: for (int i = 0; i < 4; ++i) sr[i] = std::log(s2[i]); break;
++			case RSX_SCA_OPCODE_LG2: for (int i = 0; i < 4; ++i) sr[i] = std::log2(std::fmax(std::fabs(s2[i]), 1e-38f)); break;
++			case RSX_SCA_OPCODE_EX2: for (int i = 0; i < 4; ++i) sr[i] = std::exp2(s2[i]); break;
++			case RSX_SCA_OPCODE_SIN: for (int i = 0; i < 4; ++i) sr[i] = std::sin(s2[i]); break;
++			case RSX_SCA_OPCODE_COS: for (int i = 0; i < 4; ++i) sr[i] = std::cos(s2[i]); break;
++			case RSX_SCA_OPCODE_LIT:
++			{
++				const float dx = std::fmax(s2[0], 0.f);
++				const float py = std::fmin(std::fmax(s2[3], -127.9961f), 127.9961f);
++				sr[0] = 1.f; sr[1] = dx; sr[2] = s2[0] > 0.f ? std::exp2(py * std::log2(std::fmax(s2[1], 1e-38f))) : 0.f; sr[3] = 1.f;
++				break;
++			}
++			default: swrite = false; break;
++			}
++
++			if (d0.cond != 0)
++			{
++				auto store = [](float* dst, const float* v, const bool m[4], bool sat)
++				{
++					for (int i = 0; i < 4; ++i)
++						if (m[i]) dst[i] = sat ? std::fmin(std::fmax(v[i], 0.f), 1.f) : v[i];
++				};
++				if (vwrite)
++				{
++					const bool m[4] = { !!d3.vec_writemask_x, !!d3.vec_writemask_y, !!d3.vec_writemask_z, !!d3.vec_writemask_w };
++					if (vop == RSX_VEC_OPCODE_ARL)
++					{
++						for (int i = 0; i < 4; ++i)
++							if (m[i]) a[d0.dst_tmp & 1][i] = static_cast<int>(vr[i]);
++					}
++					else
++					{
++						if (d0.vec_result && d3.dst != 0x1f && d3.dst < 16) store(o[d3.dst], vr, m, d0.staturate);
++						if (d0.dst_tmp != 0x3f) store(r[d0.dst_tmp], vr, m, d0.staturate);
++					}
++				}
++				if (swrite)
++				{
++					const bool m[4] = { !!d3.sca_writemask_x, !!d3.sca_writemask_y, !!d3.sca_writemask_z, !!d3.sca_writemask_w };
++					if (!d0.vec_result && d3.dst != 0x1f && d3.dst < 16) store(o[d3.dst], sr, m, d0.staturate);
++					if (d3.sca_dst_tmp != 0x3f) store(r[d3.sca_dst_tmp], sr, m, d0.staturate);
++				}
++			}
++
++			const u32 target = (d0.iaddrh2 << 9) | (d2.iaddrh << 3) | d3.iaddrl;
++			const bool bit = (branch_bits >> d3.branch_index) & 1;
++			const bool bcond = d3.brb_cond_true ? bit : !bit;
++			switch (sop)
++			{
++			case RSX_SCA_OPCODE_BRB:
++				if (bcond) { pc = target; continue; }
++				break;
++			case RSX_SCA_OPCODE_CLB:
++				if (bcond)
++				{
++					if (sp >= 8) return false;
++					stack[sp++] = pc + 1; pc = target; continue;
++				}
++				break;
++			case RSX_SCA_OPCODE_CAL:
++				if (sp >= 8) return false;
++				stack[sp++] = pc + 1; pc = target; continue;
++			case RSX_SCA_OPCODE_RET:
++				if (!sp) { steps = 1 << 30; break; }
++				pc = stack[--sp]; continue;
++			case RSX_SCA_OPCODE_BRA:
++			case RSX_SCA_OPCODE_BRI:
++			case RSX_SCA_OPCODE_CLI:
++			case RSX_SCA_OPCODE_PSH:
++			case RSX_SCA_OPCODE_POP:
++				return false;
++			default: break;
++			}
++
++			if (steps >= (1 << 30) || d3.end) break;
++			++pc;
++		}
++
++		for (int i = 0; i < 4; ++i)
++		{
++			out_pos[i] = o[0][i];
++			if (!std::isfinite(out_pos[i])) return false;
++		}
++		return true;
++	}
++
++	// Affine object->clip matrix of the current vertex program (position input only), verified at a test point
++	bool vp_extract_matrix(const RSXVertexProgram& vp, const float* consts, u32 branch_bits, m4& out)
++	{
++		static const float pts[5][4] = { {0, 0, 0, 1}, {1, 0, 0, 1}, {0, 1, 0, 1}, {0, 0, 1, 1}, {0.37f, -1.3f, 2.1f, 1} };
++		float p[5][4];
++		for (int i = 0; i < 5; ++i)
++			if (!vp_run(vp, consts, branch_bits, pts[i], p[i])) return false;
++
++		for (int r = 0; r < 4; ++r)
++		{
++			out.m[r][3] = p[0][r];
++			for (int c = 0; c < 3; ++c) out.m[r][c] = static_cast<double>(p[c + 1][r]) - p[0][r];
++		}
++
++		double mx = 0;
++		for (int r = 0; r < 4; ++r) mx = std::fmax(mx, std::fabs(p[4][r]));
++		for (int r = 0; r < 4; ++r)
++		{
++			double pr = out.m[r][3];
++			for (int c = 0; c < 3; ++c) pr += out.m[r][c] * pts[4][c];
++			if (std::fabs(pr - p[4][r]) > 1e-3 * (1.0 + mx)) return false;
++		}
++		return true;
++	}
++}
++namespace vk
++{
++	// Scene colour/depth -> RGBA16F colour, R32F depth, RG16F motion vectors (UV units, previous - current)
++	struct r2aa_prep_pass : compute_task
++	{
++		const vk::image_view* in_color = nullptr;
++		const vk::image_view* in_depth = nullptr;
++		const vk::image_view* out_color = nullptr;
++		const vk::image_view* out_depth = nullptr;
++		const vk::image_view* out_mv = nullptr;
++		const vk::image_view* in_prev_depth = nullptr;
++		const vk::image_view* out_mask = nullptr;
++		std::unique_ptr<vk::sampler> m_sampler;
++
++		r2aa_prep_pass()
++		{
++			m_src =
++				"#version 450\n"
++				"layout(local_size_x = 8, local_size_y = 8) in;\n"
++				"layout(set=0, binding=0) uniform sampler2D ColorIn;\n"
++				"layout(set=0, binding=1) uniform sampler2D DepthIn;\n"
++				"layout(set=0, binding=2, rgba16f) uniform writeonly image2D ColorOut;\n"
++				"layout(set=0, binding=3, r32f) uniform writeonly image2D DepthOut;\n"
++				"layout(set=0, binding=4, rg16f) uniform writeonly image2D MvOut;\n"
++				"layout(set=0, binding=5) uniform sampler2D PrevDepthIn;\n"
++				"layout(set=0, binding=6, r8) uniform writeonly image2D MaskOut;\n"
++				// view: jitter ndc xy, viewport wh; opts: zA, zB, rw, rh; opts2: has previous depth, depth inverted
++				"layout(push_constant) uniform PC { mat4 T; vec4 view; vec4 opts; vec4 opts2; };\n"
++				// depth -> a value proportional to 1 / view distance (relative comparisons = distance ratios)
++				"float lin(float raw) { return opts2.y > 0.5 ? raw : 1.0 - raw; }\n"
++				"void main()\n"
++				"{\n"
++				"	ivec2 p = ivec2(gl_GlobalInvocationID.xy);\n"
++				"	if (p.x >= int(opts.z) || p.y >= int(opts.w)) return;\n"
++				"	vec4 c = texelFetch(ColorIn, p, 0);\n"
++				"	float d = texelFetch(DepthIn, p, 0).r;\n"
++				"	imageStore(ColorOut, p, c);\n"
++				"	imageStore(DepthOut, p, vec4(d));\n"
++				"	vec2 ndc = (vec2(p) + 0.5) / view.zw * 2.0 - 1.0 - view.xy;\n"
++				"	vec4 q = T * vec4(ndc, d * opts.x + opts.y, 1.0);\n"
++				"	vec2 mv = vec2(0.0);\n"
++				"	float m = 0.0;\n"
++				"	if (abs(q.w) > 1e-7)\n"
++				"	{\n"
++				"		mv = (q.xy / q.w - ndc) * 0.5;\n"
++				"		if (any(isnan(mv)) || any(isinf(mv)) || any(greaterThan(abs(mv), vec2(2.0)))) mv = vec2(0.0);\n"
++				// Moving objects: where this pixel was last frame (camera motion only), the previous depth
++				// should match. Outside the 3x3 range there = something moved: favour the current frame.
++				"		else if (opts2.x > 0.5)\n"
++				"		{\n"
++				"			ivec2 ip = ivec2(floor((q.xy / q.w + 1.0) * 0.5 * view.zw));\n"
++				"			ivec2 lim = ivec2(opts.zw) - 1;\n"
++				"			if (all(greaterThanEqual(ip, ivec2(0))) && all(lessThanEqual(ip, lim)))\n"
++				"			{\n"
++				"				float lo = 1e30, hi = -1e30;\n"
++				"				for (int y = -1; y <= 1; ++y)\n"
++				"					for (int x = -1; x <= 1; ++x)\n"
++				"					{\n"
++				"						float l = lin(texelFetch(PrevDepthIn, clamp(ip + ivec2(x, y), ivec2(0), lim), 0).r);\n"
++				"						lo = min(lo, l); hi = max(hi, l);\n"
++				"					}\n"
++				"				float lc = lin(((q.z / q.w) - opts.y) / opts.x);\n"
++				// soft: no effect within 3% (jitter, slopes), full at 15%, so edges near the limit don't flicker
++				"				float e = max(lo * 0.97 - lc, lc - hi * 1.03) / max(max(lc, hi), 1e-6);\n"
++				"				m = 0.85 * smoothstep(0.0, 0.12, e);\n"
++				"			}\n"
++				"		}\n"
++				"	}\n"
++				"	imageStore(MvOut, p, vec4(mv, 0.0, 0.0));\n"
++				"	imageStore(MaskOut, p, vec4(m));\n"
++				"}\n";
++			ssbo_count = 0;
++			use_push_constants = true;
++			push_constants_size = 112;
++			create();
++		}
++
++		std::vector<glsl::program_input> get_inputs() override
++		{
++			auto result = compute_task::get_inputs();
++			const char* names[] = { "ColorIn", "DepthIn", "ColorOut", "DepthOut", "MvOut", "PrevDepthIn", "MaskOut" };
++			for (u32 i = 0; i < 7; ++i)
++			{
++				result.push_back(glsl::program_input::make(::glsl::program_domain::glsl_compute_program, names[i],
++					(i < 2 || i == 5) ? vk::glsl::input_type_texture : vk::glsl::input_type_storage_texture, 0, i));
++			}
++			return result;
++		}
++
++		void bind_resources(const vk::command_buffer&) override
++		{
++			if (!m_sampler)
++			{
++				m_sampler = std::make_unique<vk::sampler>(*vk::get_current_renderer(),
++					VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
++					VK_FALSE, 0.f, 1.f, 0.f, 0.f, VK_FILTER_NEAREST, VK_FILTER_NEAREST, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK);
++			}
++			m_program->bind_uniform({ *in_color, *m_sampler }, 0, 0);
++			m_program->bind_uniform({ *in_depth, *m_sampler }, 0, 1);
++			m_program->bind_uniform({ *out_color }, 0, 2);
++			m_program->bind_uniform({ *out_depth }, 0, 3);
++			m_program->bind_uniform({ *out_mv }, 0, 4);
++			m_program->bind_uniform({ *in_prev_depth, *m_sampler }, 0, 5);
++			m_program->bind_uniform({ *out_mask }, 0, 6);
++		}
++
++		void run(const vk::command_buffer& cmd, const float* constants, u32 w, u32 h)
++		{
++			if (!m_program) load_program(cmd);
++			vkCmdPushConstants(cmd, m_program->layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, push_constants_size, constants);
++			compute_task::run(cmd, (w + 7) / 8, (h + 7) / 8, 1);
++		}
++	};
++
++	// Upscaler output + original alpha -> image copied back into the scene target (optionally BGRA-swizzled)
++	template <bool HalfFloat>
++	struct r2aa_merge_pass : compute_task
++	{
++		const vk::image_view* in_result = nullptr;
++		const vk::image_view* in_orig = nullptr;
++		const vk::image_view* out_final = nullptr;
++		std::unique_ptr<vk::sampler> m_sampler;
++
++		r2aa_merge_pass()
++		{
++			m_src = std::string(
++				"#version 450\n"
++				"layout(local_size_x = 8, local_size_y = 8) in;\n"
++				"layout(set=0, binding=0) uniform sampler2D ResultIn;\n"
++				"layout(set=0, binding=1) uniform sampler2D OrigIn;\n") +
++				(HalfFloat ? "layout(set=0, binding=2, rgba16f) uniform writeonly image2D FinalOut;\n"
++				           : "layout(set=0, binding=2, rgba8) uniform writeonly image2D FinalOut;\n") +
++				"layout(push_constant) uniform PC { vec4 opts; vec4 opts2; };\n" // x: swap R/B, y/z: output size, w: debug view; opts2.xy: render/output
++				"void main()\n"
++				"{\n"
++				"	ivec2 p = ivec2(gl_GlobalInvocationID.xy);\n"
++				"	if (p.x >= int(opts.y) || p.y >= int(opts.z)) return;\n"
++				"	ivec2 q = ivec2((vec2(p) + 0.5) * opts2.xy);\n"
++				"	vec3 c = texelFetch(ResultIn, p, 0).rgb;\n"
++				"	if (any(isnan(c))) c = texelFetch(OrigIn, q, 0).rgb;\n"
++				"	if (opts.w > 1.5) { if (p.x < int(opts.y) / 2) c = texelFetch(OrigIn, q, 0).rgb; }\n"
++				"	else if (opts.w > 0.5) c = min(abs(c - texelFetch(OrigIn, q, 0).rgb) * 8.0, vec3(1.0));\n"
++				"	vec4 r = vec4(c, texelFetch(OrigIn, q, 0).a);\n"
++				"	if (opts.x > 0.5) r = r.bgra;\n"
++				"	imageStore(FinalOut, p, r);\n"
++				"}\n";
++			ssbo_count = 0;
++			use_push_constants = true;
++			push_constants_size = 32;
++			create();
++		}
++
++		std::vector<glsl::program_input> get_inputs() override
++		{
++			auto result = compute_task::get_inputs();
++			const char* names[] = { "ResultIn", "OrigIn", "FinalOut" };
++			for (u32 i = 0; i < 3; ++i)
++			{
++				result.push_back(glsl::program_input::make(::glsl::program_domain::glsl_compute_program, names[i],
++					i < 2 ? vk::glsl::input_type_texture : vk::glsl::input_type_storage_texture, 0, i));
++			}
++			return result;
++		}
++
++		void bind_resources(const vk::command_buffer&) override
++		{
++			if (!m_sampler)
++			{
++				m_sampler = std::make_unique<vk::sampler>(*vk::get_current_renderer(),
++					VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
++					VK_FALSE, 0.f, 1.f, 0.f, 0.f, VK_FILTER_NEAREST, VK_FILTER_NEAREST, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK);
++			}
++			m_program->bind_uniform({ *in_result, *m_sampler }, 0, 0);
++			m_program->bind_uniform({ *in_orig, *m_sampler }, 0, 1);
++			m_program->bind_uniform({ *out_final }, 0, 2);
++		}
++
++		void run(const vk::command_buffer& cmd, const float* constants, u32 w, u32 h)
++		{
++			if (!m_program) load_program(cmd);
++			vkCmdPushConstants(cmd, m_program->layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, push_constants_size, constants);
++			compute_task::run(cmd, (w + 7) / 8, (h + 7) / 8, 1);
++		}
++	};
++}
++
++namespace
++{
++	// ---- r2_dlss.dll (project/r2_dlss.cpp) ----
++	typedef void (*r2_dlss_log_fn)(const char*);
++	struct dlss_api
++	{
++		HMODULE dll = nullptr;
++		bool tried = false;
++		bool usable = false;   // init succeeded
++		bool failed = false;   // give up, use FSR
++		int (*required_extensions)(unsigned*, const char***, unsigned*, const char***) = nullptr;
++		int (*init)(VkInstance, VkPhysicalDevice, VkDevice, PFN_vkGetInstanceProcAddr, PFN_vkGetDeviceProcAddr, const wchar_t*, r2_dlss_log_fn) = nullptr;
++		void (*release)() = nullptr;
++		int (*create)(VkCommandBuffer, unsigned, unsigned, unsigned, unsigned, int, unsigned) = nullptr;
++		int (*eval)(VkCommandBuffer, VkImage, VkImageView, int, VkImage, VkImageView, int, VkImage, VkImageView, int,
++			VkImage, VkImageView, int, unsigned, unsigned, float, float, float, float, int, float) = nullptr;
++		void (*set_mask)(VkImage, VkImageView, int) = nullptr; // optional (older bridges lack it)
++		unsigned inst_count = 0, dev_count = 0;
++		const char** inst_exts = nullptr;
++		const char** dev_exts = nullptr;
++	} g_dlss;
++
++	void dlss_log(const char* msg) { r2log("DLSS: %s", msg); }
++
++	bool dlss_load()
++	{
++		if (g_dlss.tried) return g_dlss.dll != nullptr;
++		g_dlss.tried = true;
++		const std::wstring path = exe_dir() + L"\\r2_dlss.dll";
++		g_dlss.dll = LoadLibraryW(path.c_str());
++		if (!g_dlss.dll)
++		{
++			r2log("r2_dlss.dll not found next to the game; DLAA unavailable, using FSR 3.1");
++			return false;
++		}
++		g_dlss.required_extensions = reinterpret_cast<decltype(g_dlss.required_extensions)>(GetProcAddress(g_dlss.dll, "r2_dlss_required_extensions"));
++		g_dlss.init = reinterpret_cast<decltype(g_dlss.init)>(GetProcAddress(g_dlss.dll, "r2_dlss_init"));
++		g_dlss.release = reinterpret_cast<decltype(g_dlss.release)>(GetProcAddress(g_dlss.dll, "r2_dlss_release"));
++		g_dlss.create = reinterpret_cast<decltype(g_dlss.create)>(GetProcAddress(g_dlss.dll, "r2_dlss_create"));
++		g_dlss.eval = reinterpret_cast<decltype(g_dlss.eval)>(GetProcAddress(g_dlss.dll, "r2_dlss_eval"));
++		g_dlss.set_mask = reinterpret_cast<decltype(g_dlss.set_mask)>(GetProcAddress(g_dlss.dll, "r2_dlss_set_mask"));
++		if (!g_dlss.required_extensions || !g_dlss.init || !g_dlss.release || !g_dlss.create || !g_dlss.eval)
++		{
++			r2log("r2_dlss.dll is incomplete; DLAA unavailable");
++			g_dlss.dll = nullptr;
++			return false;
++		}
++		if (!g_dlss.required_extensions(&g_dlss.inst_count, &g_dlss.inst_exts, &g_dlss.dev_count, &g_dlss.dev_exts))
++		{
++			g_dlss.inst_count = g_dlss.dev_count = 0;
++		}
++		return true;
++	}
++
++	void push_unique(std::vector<const char*>& v, const char* name)
++	{
++		for (const char* e : v)
++			if (std::strcmp(e, name) == 0) return;
++		v.push_back(name);
++	}
++
++#ifdef R2PORT_HAVE_FFX
++	struct ffx_api
++	{
++		HMODULE dll = nullptr;
++		bool tried = false;
++		bool failed = false;
++		PfnFfxCreateContext create = nullptr;
++		PfnFfxDestroyContext destroy = nullptr;
++		PfnFfxDispatch dispatch = nullptr;
++		ffxContext ctx = nullptr;
++	} g_ffx;
++
++	void ffx_message(uint32_t type, const wchar_t* message)
++	{
++		char buf[512] = {};
++		WideCharToMultiByte(CP_UTF8, 0, message ? message : L"", -1, buf, sizeof(buf) - 1, nullptr, nullptr);
++		r2log("FSR 3.1 %s: %s", type == FFX_API_MESSAGE_TYPE_ERROR ? "error" : "warning", buf);
++	}
++
++	bool ffx_load()
++	{
++		if (g_ffx.tried) return g_ffx.dll != nullptr;
++		g_ffx.tried = true;
++		const std::wstring path = exe_dir() + L"\\amd_fidelityfx_vk.dll";
++		g_ffx.dll = LoadLibraryW(path.c_str());
++		if (!g_ffx.dll)
++		{
++			r2log("amd_fidelityfx_vk.dll not found next to the game; FSR 3.1 unavailable");
++			return false;
++		}
++		g_ffx.create = reinterpret_cast<PfnFfxCreateContext>(GetProcAddress(g_ffx.dll, "ffxCreateContext"));
++		g_ffx.destroy = reinterpret_cast<PfnFfxDestroyContext>(GetProcAddress(g_ffx.dll, "ffxDestroyContext"));
++		g_ffx.dispatch = reinterpret_cast<PfnFfxDispatch>(GetProcAddress(g_ffx.dll, "ffxDispatch"));
++		if (!g_ffx.create || !g_ffx.destroy || !g_ffx.dispatch)
++		{
++			r2log("amd_fidelityfx_vk.dll has no FFX API exports");
++			g_ffx.dll = nullptr;
++			return false;
++		}
++		return true;
++	}
++#endif
++}
++
++namespace vk
++{
++	int r2aa_mode()
++	{
++		return r2cfg().mode;
++	}
++
++	void r2aa_extend_instance(std::vector<const char*>& extensions)
++	{
++		if (r2cfg().mode != 2 || !dlss_load() || !g_dlss.inst_count) return;
++
++		u32 count = 0;
++		vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr);
++		std::vector<VkExtensionProperties> props(count);
++		vkEnumerateInstanceExtensionProperties(nullptr, &count, props.data());
++		for (unsigned i = 0; i < g_dlss.inst_count; ++i)
++		{
++			const char* name = g_dlss.inst_exts[i];
++			bool ok = false;
++			for (const auto& p : props) ok = ok || std::strcmp(p.extensionName, name) == 0;
++			if (ok) push_unique(extensions, name);
++			else r2log("instance extension %s (NGX) is not supported", name);
++		}
++	}
++
++	void r2aa_extend_device(VkPhysicalDevice pdev, std::vector<const char*>& extensions,
++		VkPhysicalDeviceFeatures& features, VkPhysicalDeviceVulkan12Features& vulkan12, VkDeviceCreateInfo& info)
++	{
++		if (!r2cfg().mode) return;
++
++		u32 count = 0;
++		vkEnumerateDeviceExtensionProperties(pdev, nullptr, &count, nullptr);
++		std::vector<VkExtensionProperties> props(count);
++		vkEnumerateDeviceExtensionProperties(pdev, nullptr, &count, props.data());
++		auto supported = [&](const char* name)
++		{
++			for (const auto& p : props)
++				if (std::strcmp(p.extensionName, name) == 0) return true;
++			return false;
++		};
++
++		static VkPhysicalDevice16BitStorageFeatures s16{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES };
++		static VkPhysicalDeviceSubgroupSizeControlFeatures ssc{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES };
++		static VkPhysicalDeviceVulkan12Features v12{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
++		const bool has_ssc = supported(VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME);
++
++		VkPhysicalDeviceFeatures2 f2{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
++		s16.pNext = nullptr; ssc.pNext = nullptr; v12.pNext = nullptr;
++		f2.pNext = &s16;
++		s16.pNext = &v12;
++		if (has_ssc) v12.pNext = &ssc;
++		vkGetPhysicalDeviceFeatures2(pdev, &f2);
++
++		// FSR 3.1 picks its shader permutations from what the GPU supports, so enable what it may use
++		features.shaderInt16 |= f2.features.shaderInt16;
++		features.shaderImageGatherExtended |= f2.features.shaderImageGatherExtended;
++		features.shaderStorageImageExtendedFormats |= f2.features.shaderStorageImageExtendedFormats;
++		features.shaderStorageImageReadWithoutFormat |= f2.features.shaderStorageImageReadWithoutFormat;
++		features.shaderStorageImageWriteWithoutFormat |= f2.features.shaderStorageImageWriteWithoutFormat;
++		vulkan12.shaderFloat16 |= v12.shaderFloat16;
++		vulkan12.shaderInt8 |= v12.shaderInt8;
++		vulkan12.shaderSubgroupExtendedTypes |= v12.shaderSubgroupExtendedTypes;
++		vulkan12.storageBuffer8BitAccess |= v12.storageBuffer8BitAccess;
++
++		s16.pNext = const_cast<void*>(info.pNext);
++		info.pNext = &s16;
++
++		// FSR 3.1 loads the KHR-suffixed entry points, which vkGetDeviceProcAddr only returns when the extension is enabled
++		for (const char* name : { VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME, VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME })
++			if (supported(name)) push_unique(extensions, name);
++
++		if (has_ssc && ssc.subgroupSizeControl)
++		{
++			push_unique(extensions, VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME);
++			ssc.pNext = const_cast<void*>(info.pNext);
++			info.pNext = &ssc;
++		}
++
++		if (r2cfg().mode == 2 && g_dlss.dll)
++		{
++			for (unsigned i = 0; i < g_dlss.dev_count; ++i)
++			{
++				const char* name = g_dlss.dev_exts[i];
++				if (std::strcmp(name, "VK_EXT_buffer_device_address") == 0) continue; // core bufferDeviceAddress instead
++				if (supported(name)) push_unique(extensions, name);
++				else r2log("device extension %s (NGX) is not supported", name);
++			}
++			vulkan12.bufferDeviceAddress |= v12.bufferDeviceAddress;
++		}
++
++		info.enabledExtensionCount = static_cast<u32>(extensions.size());
++		info.ppEnabledExtensionNames = extensions.data();
++	}
++}
++namespace
++{
++	struct pair_tally
++	{
++		u32 count = 0;
++		u32 first_draw = 0;
++		u32 segments = 0;   // separate runs of consecutive draws into this pair (light pre-pass: geometry pass, then material pass)
++	};
++
++	struct r2aa_state
++	{
++		bool disabled = false;         // no usable backend: never jitter
++		bool checked = false;
++
++		// Scene chosen at the previous flip
++		bool scene_valid = false;
++		u32 scene_rt = 0, scene_ds = 0;
++		bool scene_changed = true;
++
++		// Per-frame
++		std::unordered_map<u64, pair_tally> tally;
++		u64 last_pair = ~0ull;
++		u32 seg_count = 0, seg_target = 1; // scene-pair runs this frame / in the previous frame (AA after the last one)
++		u32 draw_index = 0;
++		u32 scene_draws = 0, scene_draws_last = 0;
++		bool aa_done = false;
++		bool cur_scene = false;        // the draw being set up is a scene draw
++		vk::render_target* rt_ptr = nullptr;
++		vk::render_target* ds_ptr = nullptr;
++		rsx::address_range32 rt_range{};
++		float vw = 0, vh = 0;
++		bool inverted = false;
++		screen_xform frame_S, last_S;
++
++		// Jitter: desired for this frame (pixels) and what the current vertex env contains
++		float jx = 0, jy = 0;
++		float baked_x = 0, baked_y = 0;
++		u32 frame = 0;
++
++		// Camera motion
++		std::unordered_map<u64, m4> cur_M, prev_M;
++		std::unordered_map<u64, u32> occurrences;
++		u32 evals = 0, eval_fail = 0;
++		screen_xform prev_S;
++		bool prev_valid = false;
++		bool ran_ok = false;           // the upscaler processed this frame's scene
++		m4 last_T = m4_identity();
++
++		// Upscaler
++		int backend = 0;               // 1 FSR, 2 DLSS
++		bool dlss_ready = false;
++		u32 res_w = 0, res_h = 0;
++		VkFormat res_fmt = VK_FORMAT_UNDEFINED;
++		bool res_inverted = false;
++		bool need_reset = true;
++		std::unique_ptr<vk::viewable_image> color, depth, mv, out, final_img, depth_prev, mask;
++		bool depth_prev_valid = false;
++		std::chrono::steady_clock::time_point last_run{};
++		u32 runs = 0;
++		u32 vote_hits = 0, vote_total = 0;
++		std::string last_skip;
++		u32 stat_runs = 0, stat_resets = 0, stat_jitter = 0, stat_flips_noscene = 0, stat_wb_miss = 0; // diagnostics
++
++		// Upscaling: during the scene window (first scene-pair bind .. upscaler) every target with the scene's size
++		// renders with a reduced RPCS3 resolution scale; other targets (shadow maps etc.) stay at full resolution
++		bool window = false;
++		bool resolve_wait = false;     // upscaling: the game resolves the scene into its own address; upscale after that pass
++		bool section = false;          // the reduced scale is active right now
++		u16 win_w = 0, win_h = 0;
++		rsx::surface_scaling_config_t full_cfg{};
++		float ow = 0, oh = 0;          // output (full-resolution) size of the scene viewport
++		u32 res_ow = 0, res_oh = 0;
++		bool wb_pending = false;       // upscaled result waits for the full-resolution scene target
++		bool wb_armed = false;
++		u32 out_w = 0, out_h = 0;
++		u32 stat_wb_direct = 0;        // results written into a new full-resolution scene surface
++		u32 jitter_cooldown = 0;       // frames without jitter after the result could not be shown
++	} g_r2;
++
++	void skip_once(const std::string& why)
++	{
++		if (g_r2.last_skip != why)
++		{
++			g_r2.last_skip = why;
++			r2log("not applied: %s", why.c_str());
++		}
++	}
++
++	float halton(u32 index, u32 base)
++	{
++		float f = 1.f, r = 0.f;
++		while (index > 0)
++		{
++			f /= static_cast<float>(base);
++			r += f * static_cast<float>(index % base);
++			index /= base;
++		}
++		return r;
++	}
++
++	u64 mix64(u64 h, u64 v)
++	{
++		h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
++		return h;
++	}
++
++	bool own_backend_ready()
++	{
++		if (g_r2.checked) return !g_r2.disabled;
++		g_r2.checked = true;
++		bool fsr = false;
++#ifdef R2PORT_HAVE_FFX
++		fsr = ffx_load();
++#else
++		r2log("built without FidelityFX headers; FSR 3.1 unavailable");
++#endif
++		const bool dlss = r2cfg().mode == 2 && dlss_load();
++		g_r2.disabled = !fsr && !dlss;
++		if (g_r2.disabled) r2log("no upscaler backend available; anti-aliasing disabled");
++		return !g_r2.disabled;
++	}
++
++	// Camera motion R = M_prev * M_cur^-1, voted over all draws present in both frames
++	bool vote_camera(m4& R, u32& matched, u32& members)
++	{
++		std::vector<m4> rs;
++		rs.reserve(g_r2.cur_M.size());
++		for (const auto& [key, mc] : g_r2.cur_M)
++		{
++			const auto it = g_r2.prev_M.find(key);
++			if (it == g_r2.prev_M.end()) continue;
++			m4 inv;
++			if (!m4_inverse(mc, inv)) continue;
++			const m4 r = m4_mul(it->second, inv);
++			if (!std::isfinite(m4_maxabs(r))) continue;
++			rs.push_back(r);
++		}
++		matched = static_cast<u32>(rs.size());
++		members = 0;
++		if (rs.empty()) return false;
++
++		usz best = 0;
++		for (usz i = 0; i < rs.size(); ++i)
++		{
++			const double tol = 1e-3 * (1.0 + m4_maxabs(rs[i]));
++			u32 n = 0;
++			for (usz j = 0; j < rs.size(); ++j)
++				if (m4_maxdiff(rs[i], rs[j]) <= tol) ++n;
++			if (n > members)
++			{
++				members = n;
++				best = i;
++			}
++		}
++		R = rs[best];
++		return members >= 4 && members * 4 >= matched;
++	}
++}
++
++int VKGSRender::r2aa_on_draw()
++{
++	auto& st = g_r2;
++	st.cur_scene = false;
++	if (!r2cfg().mode || !own_backend_ready()) return 0;
++
++	const auto regs = REGS(m_ctx);
++	auto& sc = res()->surface_cache;
++	auto* rt = sc.m_bound_render_targets[0].second;
++	auto* ds = sc.m_bound_depth_stencil.second;
++	const u32 rt_addr = rt ? sc.m_bound_render_targets[0].first : 0;
++	const u32 ds_addr = ds ? sc.m_bound_depth_stencil.first : 0;
++	const bool dtest = regs->depth_test_enabled();
++	const bool dwrite = regs->depth_write_enabled();
++
++	const u64 pair = (static_cast<u64>(rt_addr) << 32) | ds_addr;
++	const bool new_run = pair != st.last_pair;
++	st.last_pair = pair;
++	if (ds_addr && (dtest || dwrite))
++	{
++		auto& t = st.tally[pair];
++		if (!t.count) t.first_draw = st.draw_index;
++		t.count++;
++		if (new_run) t.segments++;
++	}
++	const bool scene_pair = st.scene_valid && rt_addr == st.scene_rt && ds_addr == st.scene_ds;
++	if (scene_pair && new_run) st.seg_count++;
++	st.draw_index++;
++
++	if (r2cfg().trace && (st.frame % static_cast<u32>(r2cfg().trace)) == 0 && st.frame)
++	{
++		const auto& vp = m_ctx->draw_state.viewport;
++		std::string tex;
++		for (u32 mask = m_ctx->program.fp_metadata.referenced_textures_mask, i = 0; mask; mask >>= 1, ++i)
++		{
++			if (!(mask & 1) || !regs->fragment_textures[i].enabled()) continue;
++			const auto& t = regs->fragment_textures[i];
++			char b[64];
++			std::snprintf(b, sizeof(b), " t%u=%08x(%ux%u)", i, rsx::get_address(m_ctx, t.offset(), t.location()), t.width(), t.height());
++			tex += b;
++		}
++		std::string mrt;
++		for (u32 i = 1; i < 4; ++i)
++		{
++			if (!sc.m_bound_render_targets[i].second) continue;
++			char b[32];
++			std::snprintf(b, sizeof(b), " rt%u=%08x", i, sc.m_bound_render_targets[i].first);
++			mrt += b;
++		}
++		const auto* dsimg = sc.m_bound_depth_stencil.second;
++		r2log("T f%u d%u rt=%08x(%ux%u fmt%d)%s ds=%08x(%ux%u) fbo=%ux%u vpx=%.0fx%.0f cfg=%u clip=%ux%u+%d,%d sc=%ux%u dt=%d dw=%d vp=%05x fp=%08x%s",
++			st.frame, st.draw_index - 1, rt_addr, rt ? rt->info.extent.width : 0, rt ? rt->info.extent.height : 0, rt ? static_cast<int>(rt->info.format) : 0,
++			mrt.c_str(), ds_addr, dsimg ? dsimg->info.extent.width : 0, dsimg ? dsimg->info.extent.height : 0,
++			m_draw_fbo ? m_draw_fbo->width() : 0, m_draw_fbo ? m_draw_fbo->height() : 0, m_viewport.width, m_viewport.height,
++			RSX(m_ctx)->resolution_scaling_config.scale_percent,
++			vp.clip_width, vp.clip_height, regs->surface_clip_origin_x(), regs->surface_clip_origin_y(),
++			regs->scissor_width(), regs->scissor_height(), dtest, dwrite,
++			m_ctx->program.vertex_program.base_address, regs->shader_program_address(), tex.c_str());
++	}
++	if (st.scene_valid && !st.aa_done && st.scene_draws && !scene_pair && st.seg_count >= st.seg_target && !st.resolve_wait)
++	{
++		// The last run of draws into the scene pair is over (R2 draws it twice: geometry pre-pass, then the
++		// material pass after the light passes). Anything else now (transparents, post, HUD): AA first.
++		r2aa_run();
++	}
++
++	if (st.scene_valid && !st.aa_done && ds_addr == st.scene_ds && (dtest || dwrite))
++	{
++		st.cur_scene = true;
++		st.scene_draws++;
++		st.ds_ptr = ds;
++		if (rt_addr == st.scene_rt)
++		{
++			st.rt_ptr = rt;
++			st.rt_range = rt->get_memory_range();
++		}
++
++		const auto& vp = m_ctx->draw_state.viewport;
++		const auto [cw, ch] = rsx::apply_resolution_scale<true>(RSX(m_ctx)->resolution_scaling_config, vp.clip_width, vp.clip_height);
++		st.vw = static_cast<float>(cw);
++		st.vh = static_cast<float>(ch);
++		const auto [fw, fh] = rsx::apply_resolution_scale<true>(st.window ? st.full_cfg : RSX(m_ctx)->resolution_scaling_config, vp.clip_width, vp.clip_height);
++		st.ow = static_cast<float>(fw);
++		st.oh = static_cast<float>(fh);
++		const auto func = regs->depth_func();
++		st.inverted = func == rsx::comparison_function::greater || func == rsx::comparison_function::greater_or_equal;
++		if (st.last_S.valid) st.frame_S = st.last_S;
++
++		if (st.evals < 384)
++		{
++			st.evals++;
++			const auto& prog = m_ctx->program.vertex_program;
++			u64 key = mix64(prog.base_address, prog.entry);
++			key = mix64(key, prog.data.size());
++			key = mix64(key, regs->vertex_arrays_info[0].offset());
++			key = mix64(key, regs->index_array_address());
++			const u32 occ = st.occurrences[key]++;
++			key = mix64(key, occ);
++
++			m4 M;
++			const float* consts = reinterpret_cast<const float*>(regs->transform_constants.data());
++			if (vp_extract_matrix(prog, consts, regs->transform_branch_bits(), M))
++			{
++				st.cur_M[key] = M;
++			}
++			else
++			{
++				st.eval_fail++;
++			}
++		}
++	}
++
++	const float want_x = st.cur_scene ? st.jx : 0.f;
++	const float want_y = st.cur_scene ? st.jy : 0.f;
++	return (want_x != st.baked_x || want_y != st.baked_y) ? 1 : 0;
++}
++
++void VKGSRender::r2aa_patch_vertex_env(void* env)
++{
++	if (!r2cfg().mode || g_r2.disabled) return;
++	auto& st = g_r2;
++	float* f = static_cast<float*>(env);
++	st.last_S = { f[0], f[3], f[5], f[7], f[10], f[11], f[19], f[20], true };
++	st.baked_x = st.baked_y = 0.f;
++	if (!st.cur_scene) return;
++
++	st.frame_S = st.last_S;
++	if (st.vw > 0 && st.vh > 0)
++	{
++		f[3] += 2.f * st.jx / st.vw;
++		f[7] += 2.f * st.jy / st.vh;
++		st.baked_x = st.jx;
++		st.baked_y = st.jy;
++	}
++}
++
++void VKGSRender::r2aa_check_texture_reads()
++{
++	auto& st = g_r2;
++	if (!r2cfg().mode || st.disabled || !st.scene_draws || st.aa_done || !st.rt_ptr || st.seg_count < st.seg_target) return; // reads between the scene passes are the light passes
++	if (st.resolve_wait) return; // the resolve pass reads the scene; upscale its output once it is done
++
++	auto& sc = res()->surface_cache;
++	if (sc.m_bound_render_targets[0].second && sc.m_bound_render_targets[0].first == st.scene_rt) return;
++
++	const auto regs = REGS(m_ctx);
++	for (u32 mask = m_ctx->program.fp_metadata.referenced_textures_mask, i = 0; mask; mask >>= 1, ++i)
++	{
++		if (!(mask & 1)) continue;
++		const auto& tex = regs->fragment_textures[i];
++		if (!tex.enabled()) continue;
++		const u32 addr = rsx::get_address(m_ctx, tex.offset(), tex.location());
++		if (addr >= st.rt_range.start && addr <= st.rt_range.end)
++		{
++			r2aa_run();
++			return;
++		}
++	}
++}
++
++void VKGSRender::r2aa_before_bind(u32 color0, u32 zeta)
++{
++	auto& st = g_r2;
++	if (!r2cfg().mode || st.disabled) return;
++	const bool scene_bind = color0 == st.scene_rt && zeta == st.scene_ds;
++	if (st.scene_valid && st.scene_draws && !st.aa_done && st.rt_ptr && st.seg_count >= st.seg_target && !scene_bind)
++	{
++		auto& sc = res()->surface_cache;
++		if (st.resolve_wait)
++		{
++			// The resolve pass (and whatever it drew into the scene address) is done once another target is bound
++			if (color0 && color0 != st.scene_rt) r2aa_run();
++		}
++		else if (sc.m_bound_render_targets[0].first == st.scene_rt && sc.m_bound_depth_stencil.first == st.scene_ds)
++		{
++			if (st.window && (color0 == st.scene_rt || !color0))
++			{
++				// R2 resolves the (2x horizontal) scene into a plain target at the same address. Keep that pass inside
++				// the reduced-scale window and upscale its result: the full-scale scene layout is never rebuilt.
++				// A depth-only bind (depth clear) may come first.
++				st.resolve_wait = true;
++			}
++			else
++			{
++				r2aa_run();
++			}
++		}
++	}
++
++	const auto& layout = m_ctx->fb.layout;
++	if (st.window && st.aa_done)
++	{
++		// Scene window over: everything after it (transparents, post, HUD) renders at full resolution
++		st.window = false;
++		r2aa_set_section(false);
++		st.wb_armed = st.wb_pending;
++		st.wb_pending = false;
++		r2aa_writeback(); // before the next targets are bound: they may alias the scene memory (R2's quarter-size post buffers)
++	}
++	else if (!st.window && !st.aa_done && !st.scene_draws && st.scene_valid && scene_bind && r2cfg().upscale < 1.f)
++	{
++		st.window = true;
++		st.full_cfg = RSX(m_ctx)->resolution_scaling_config;
++		st.win_w = layout.width;
++		st.win_h = layout.height;
++	}
++	if (st.window)
++	{
++		r2aa_set_section(layout.width == st.win_w && layout.height == st.win_h);
++	}
++}
++
++void VKGSRender::r2aa_set_section(bool on)
++{
++	auto& st = g_r2;
++	if (on == st.section) return;
++	auto& cfg = RSX(m_ctx)->resolution_scaling_config;
++	if (on)
++	{
++		const float pct = std::round(static_cast<float>(cfg.scale_percent) * r2cfg().upscale);
++		cfg.scale_percent = static_cast<u16>(std::max(10.f, pct));
++		st.section = true;
++	}
++	else
++	{
++		cfg = st.full_cfg;
++		st.section = false;
++	}
++	// Viewport/scissor/WPOS and point size depend on the active scale
++	m_ctx->draw_state.dirty.set(rsx::draw_state_t::group::viewport);
++	m_ctx->draw_state.dirty.set(rsx::draw_state_t::group::scissor);
++	m_ctx->draw_state.dirty.set(rsx::draw_state_t::group::vertex_env);
++	m_ctx->draw_state.dirty.set(rsx::draw_state_t::group::fragment_env);
++}
++
++void VKGSRender::r2aa_writeback()
++{
++	auto& st = g_r2;
++	if (!st.wb_armed) return;
++	st.wb_armed = false;
++
++	auto& sc = res()->surface_cache;
++	auto& cmd = *m_current_command_buffer;
++	auto miss = [&](const std::string& why)
++	{
++		// Show the plain (scaled) frame
++		st.stat_wb_miss++;
++		st.jitter_cooldown = 120;
++		skip_once("upscaled scene could not be written back (" + why + ")");
++	};
++	if (!st.final_img) return miss("no result");
++
++	// Replace the reduced-scale scene surface with a full-resolution one holding the upscaled result. This runs before
++	// the next targets are bound, so whatever follows (post passes sampling the scene, or quarter-size buffers that
++	// alias its memory and inherit from it) sees the upscaled scene.
++	auto* old = sc.get_surface_at(st.scene_rt);
++	if (!old || old->is_depth_surface() || old->samples() > 1 || old->info.format != st.res_fmt)
++		return miss("scene surface gone");
++	if (vk::is_renderpass_open(cmd)) vk::end_renderpass(cmd);
++	auto* rt = old;
++	if (old->info.extent.width < st.out_w || old->info.extent.height < st.out_h)
++	{
++		rt = sc.r2_rescale_color_surface(cmd, old, st.full_cfg);
++		if (!rt || rt->info.extent.width < st.out_w || rt->info.extent.height < st.out_h)
++			return miss("full-resolution surface too small");
++	}
++	if (!st.stat_wb_direct++) r2log("upscaled scene written to a %ux%u surface", rt->info.extent.width, rt->info.extent.height);
++	if (r2cfg().trace && (st.frame % static_cast<u32>(r2cfg().trace)) == 0 && st.frame)
++		r2log("T f%u WB old %ux%u (native %ux%u, %u%%) -> rt %ux%u (native %ux%u, %u%%) out %ux%u", st.frame,
++			old->info.extent.width, old->info.extent.height, old->get_surface_width(), old->get_surface_height(), old->resolution_scaling_config.scale_percent,
++			rt->info.extent.width, rt->info.extent.height, rt->get_surface_width(), rt->get_surface_height(), rt->resolution_scaling_config.scale_percent,
++			st.out_w, st.out_h);
++
++	rt->memory_barrier(cmd, rsx::surface_access::transfer_write); // pulls in the inherited (scaled) contents first
++	rt->push_layout(cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
++	VkImageCopy region{};
++	region.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
++	region.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
++	region.extent = { st.out_w, st.out_h, 1 };
++	vkCmdCopyImage(cmd, st.final_img->value, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rt->value, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
++	rt->pop_layout(cmd);
++	rt->on_write_copy(rsx::get_shared_tag());
++
++	cmd.r2_invalidate_state_cache();
++	m_current_command_buffer->flags |= vk::command_buffer::cb_reload_dynamic_state;
++	st.ran_ok = true;
++}
++
++void VKGSRender::r2aa_check_read(u32 address)
++{
++	auto& st = g_r2;
++	if (r2cfg().trace && (st.frame % static_cast<u32>(r2cfg().trace)) == 0 && st.frame) r2log("T f%u blit-read %08x", st.frame, address);
++	if (!r2cfg().mode || st.disabled || !st.scene_draws || st.aa_done || !st.rt_ptr || st.seg_count < st.seg_target) return; // reads between the scene passes are the light passes
++	if (st.resolve_wait) return; // the resolve pass reads the scene; upscale its output once it is done
++	if (address >= st.rt_range.start && address <= st.rt_range.end)
++	{
++		r2aa_run();
++	}
++}
++
++void VKGSRender::r2aa_on_flip()
++{
++	auto& st = g_r2;
++	if (r2cfg().mode || r2cfg().debug)
++	{
++		static auto t0 = std::chrono::steady_clock::now();
++		static u32 flips = 0;
++		++flips;
++		const auto now = std::chrono::steady_clock::now();
++		const float sec = std::chrono::duration<float>(now - t0).count();
++		if (sec >= 5.f)
++		{
++			r2log("fps %.1f (%s) runs %u resets %u jittered %u empty-flips %u writeback-misses %u", flips / sec, st.scene_valid ? "scene" : "no scene",
++				st.stat_runs, st.stat_resets, st.stat_jitter, st.stat_flips_noscene, st.stat_wb_miss);
++			st.stat_runs = st.stat_resets = st.stat_jitter = st.stat_flips_noscene = st.stat_wb_miss = 0;
++			flips = 0;
++			t0 = now;
++		}
++	}
++	if (!r2cfg().mode || st.disabled) return;
++	if (!st.draw_index) st.stat_flips_noscene++;
++
++	if (st.scene_draws && !st.aa_done)
++	{
++		r2aa_run();
++	}
++	if (st.window || st.section)
++	{
++		st.window = false;
++		if (st.section)
++		{
++			// The bound framebuffer was built at the reduced scale: force a full rebind at the restored scale
++			r2aa_set_section(false);
++			if (m_draw_fbo)
++			{
++				if (vk::is_renderpass_open(*m_current_command_buffer)) vk::end_renderpass(*m_current_command_buffer);
++				m_draw_fbo->release();
++				m_draw_fbo = nullptr;
++			}
++			m_ctx->graphics_state.set(rsx::rtt_config_dirty);
++		}
++	}
++	if (st.wb_pending || st.wb_armed) { st.stat_wb_miss++; st.jitter_cooldown = 120; }
++	st.wb_pending = st.wb_armed = false;
++	st.resolve_wait = false;
++
++	// Pick next frame's scene: the depth buffer with most depth-tested draws, then its busiest colour target
++	u64 best_ds = 0;
++	{
++		std::unordered_map<u32, u32> per_ds;
++		u32 best = 0;
++		for (const auto& [key, t] : st.tally)
++		{
++			if (!(key >> 32)) continue; // depth-only (shadow maps) can't be the scene
++			const u32 ds = static_cast<u32>(key);
++			const u32 n = (per_ds[ds] += t.count);
++			if (n > best) { best = n; best_ds = ds; }
++		}
++	}
++
++	u32 max_count = 0;
++	for (const auto& [key, t] : st.tally)
++		if (static_cast<u32>(key) == best_ds && (key >> 32)) max_count = std::max(max_count, t.count);
++
++	bool found = false;
++	u32 new_rt = 0, latest_first = 0;
++	for (const auto& [key, t] : st.tally)
++	{
++		if (static_cast<u32>(key) != best_ds || !(key >> 32)) continue;
++		if (t.count < std::max(30u, max_count / 4)) continue;
++		if (!found || t.first_draw > latest_first)
++		{
++			found = true;
++			latest_first = t.first_draw;
++			new_rt = static_cast<u32>(key >> 32);
++		}
++	}
++
++	const bool was_valid = st.scene_valid;
++	const u32 old_rt = st.scene_rt, old_ds = st.scene_ds;
++	st.scene_valid = found;
++	if (found)
++	{
++		st.scene_rt = new_rt;
++		st.scene_ds = static_cast<u32>(best_ds);
++	}
++	st.scene_changed = !was_valid || !found || old_rt != st.scene_rt || old_ds != st.scene_ds;
++	if (found)
++	{
++		const auto it = st.tally.find((static_cast<u64>(st.scene_rt) << 32) | st.scene_ds);
++		st.seg_target = it != st.tally.end() ? std::max(1u, it->second.segments) : 1u;
++	}
++	if (st.scene_changed && found)
++	{
++		r2log("scene: colour 0x%08x, depth 0x%08x (%u draws, %u passes)", st.scene_rt, st.scene_ds, max_count, st.seg_target);
++		st.need_reset = true;
++	}
++
++	if (r2cfg().debug && (st.frame % 300) == 0)
++	{
++		r2log("frame %u: %u scene draws, %u matrix evals (%u failed), vote %u/%u", st.frame, st.scene_draws, st.evals, st.eval_fail, st.vote_hits, st.vote_total);
++	}
++
++	// Next frame
++	st.prev_M.swap(st.cur_M);
++	st.cur_M.clear();
++	st.occurrences.clear();
++	st.tally.clear();
++	st.last_pair = ~0ull;
++	st.seg_count = 0;
++	st.prev_S = st.frame_S;
++	st.prev_valid = st.frame_S.valid && st.ran_ok;
++	// Jitter only while the upscaler is known to run on this scene: it ran last frame and the scene is unchanged.
++	// Otherwise (menus, loading screens, the first frame of a new scene, a failed pass) draw without jitter.
++	if (st.jitter_cooldown) st.jitter_cooldown--;
++	const bool jitter_on = st.ran_ok && st.scene_valid && !st.scene_changed && !st.jitter_cooldown;
++	st.ran_ok = false;
++	st.scene_draws_last = st.scene_draws;
++	st.scene_draws = 0;
++	st.draw_index = 0;
++	st.evals = st.eval_fail = 0;
++	st.aa_done = false;
++	st.rt_ptr = nullptr;
++	st.ds_ptr = nullptr;
++	st.frame_S.valid = false;
++	st.frame++;
++	g_r2_trace_now = r2cfg().trace && (st.frame % static_cast<u32>(r2cfg().trace)) < 2 && st.frame > 1;
++	const u32 phase = (st.frame % static_cast<u32>(r2cfg().phases)) + 1;
++	st.jx = jitter_on ? halton(phase, 2) - 0.5f : 0.f;
++	st.jy = jitter_on ? halton(phase, 3) - 0.5f : 0.f;
++	if (jitter_on) st.stat_jitter++;
++}
++namespace
++{
++	void release_backend()
++	{
++#ifdef R2PORT_HAVE_FFX
++		if (g_ffx.ctx)
++		{
++			g_ffx.destroy(&g_ffx.ctx, nullptr);
++			g_ffx.ctx = nullptr;
++		}
++#endif
++		if (g_r2.backend == 2 && g_dlss.release) g_dlss.release();
++		g_r2.backend = 0;
++	}
++
++	std::unique_ptr<vk::viewable_image> make_image(VkFormat fmt, u32 w, u32 h, VkImageUsageFlags usage)
++	{
++		const auto pdev = vk::get_current_renderer();
++		return std::make_unique<vk::viewable_image>(*pdev, pdev->get_memory_mapping().device_local, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
++			VK_IMAGE_TYPE_2D, fmt, w, h, 1, 1, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_TILING_OPTIMAL,
++			usage, vk::VK_IMAGE_CREATE_ALLOW_NULL_RPCS3, VMM_ALLOCATION_POOL_SWAPCHAIN, RSX_FORMAT_CLASS_COLOR);
++	}
++
++	vk::image_view* plain_view(vk::viewable_image* img)
++	{
++		return img->get_view(rsx::default_remap_vector.with_encoding(vk::VK_REMAP_IDENTITY), VK_IMAGE_ASPECT_COLOR_BIT);
++	}
++
++#ifdef R2PORT_HAVE_FFX
++	FfxApiResource ffx_res(vk::viewable_image* img, uint32_t usage, uint32_t state)
++	{
++		return ffxApiGetResourceVK(reinterpret_cast<void*>(img->value), ffxApiGetImageResourceDescriptionVK(img->value, img->info, usage), state);
++	}
++#endif
++}
++
++void VKGSRender::r2aa_run()
++{
++	auto& st = g_r2;
++	st.aa_done = true;
++	if (r2cfg().trace && (st.frame % static_cast<u32>(r2cfg().trace)) == 0 && st.frame) r2log("T f%u AA RUN before draw %u", st.frame, st.draw_index);
++	if (st.disabled) return;
++
++	auto& sc = res()->surface_cache;
++	vk::render_target* rt = st.rt_ptr;
++	vk::render_target* ds = st.ds_ptr;
++	if (st.resolve_wait)
++	{
++		// Upscale the resolved scene: the surface now at the scene colour address
++		st.resolve_wait = false;
++		rt = sc.get_surface_at(st.scene_rt);
++		if (rt && !(rt->resolution_scaling_config == RSX(m_ctx)->resolution_scaling_config)) rt = nullptr;
++	}
++	if (!st.scene_draws || !rt || !ds || !st.frame_S.valid || st.vw < 1 || st.vh < 1)
++	{
++		skip_once("scene incomplete (no colour/depth target seen)");
++		return;
++	}
++	if (sc.get_surface_at(st.scene_rt) != rt || (sc.get_surface_at(st.scene_ds) != ds && sc.m_bound_depth_stencil.second != ds))
++	{
++		if (r2cfg().debug && (st.frame % 300) < 2)
++		{
++			r2log("surfaces replaced at draw %u: rt %p/%p ds %p/%p bound rt %08x ds %08x", st.draw_index,
++				static_cast<void*>(sc.get_surface_at(st.scene_rt)), static_cast<void*>(rt),
++				static_cast<void*>(sc.get_surface_at(st.scene_ds)), static_cast<void*>(ds),
++				sc.m_bound_render_targets[0].first, sc.m_bound_depth_stencil.first);
++		}
++		skip_once("scene surfaces were replaced before the upscaler ran");
++		return;
++	}
++	if (rt->samples() > 1 || ds->samples() > 1)
++	{
++		skip_once("scene is multisampled; set the RPCS3 MSAA option off");
++		return;
++	}
++
++	const VkFormat cfmt = rt->info.format;
++	const bool half = cfmt == VK_FORMAT_R16G16B16A16_SFLOAT;
++	const bool swap = cfmt == VK_FORMAT_B8G8R8A8_UNORM;
++	if (!half && !swap && cfmt != VK_FORMAT_R8G8B8A8_UNORM)
++	{
++		skip_once("unsupported scene colour format " + std::to_string(static_cast<int>(cfmt)));
++		return;
++	}
++
++	const u32 rw = std::min({ static_cast<u32>(st.vw), rt->info.extent.width, ds->info.extent.width });
++	const u32 rh = std::min({ static_cast<u32>(st.vh), rt->info.extent.height, ds->info.extent.height });
++	if (rw < 16 || rh < 16)
++	{
++		skip_once("scene too small");
++		return;
++	}
++	// Output size: the full-resolution scene viewport when the scene section was rendered at a reduced scale
++	const bool upscaling = st.window;
++	const u32 ow = upscaling ? std::max(rw, static_cast<u32>(st.ow)) : rw;
++	const u32 oh = upscaling ? std::max(rh, static_cast<u32>(st.oh)) : rh;
++	if (r2cfg().trace && (st.frame % static_cast<u32>(r2cfg().trace)) == 0 && st.frame)
++		r2log("T f%u RUN rt %ux%u (native %ux%u, %u%%) ds %ux%u in %ux%u out %ux%u win %ux%u", st.frame, rt->info.extent.width, rt->info.extent.height,
++			rt->get_surface_width(), rt->get_surface_height(), rt->resolution_scaling_config.scale_percent, ds->info.extent.width, ds->info.extent.height,
++			rw, rh, ow, oh, st.win_w, st.win_h);
++
++	// (Re)create resources and the upscaler context
++	if (!st.color || st.res_w != rw || st.res_h != rh || st.res_ow != ow || st.res_oh != oh || st.res_fmt != cfmt || st.res_inverted != st.inverted || !st.backend)
++	{
++		if (st.backend)
++		{
++			flush_command_queue(true);
++			release_backend();
++		}
++		auto dispose = [](std::unique_ptr<vk::viewable_image>& img) { if (img) vk::get_resource_manager()->dispose(img); };
++		dispose(st.color); dispose(st.depth); dispose(st.mv); dispose(st.out); dispose(st.final_img); dispose(st.depth_prev); dispose(st.mask);
++
++		const VkImageUsageFlags rw_usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
++		st.color = make_image(VK_FORMAT_R16G16B16A16_SFLOAT, rw, rh, rw_usage);
++		st.depth = make_image(VK_FORMAT_R32_SFLOAT, rw, rh, rw_usage);
++		st.depth_prev = make_image(VK_FORMAT_R32_SFLOAT, rw, rh, rw_usage);
++		st.mask = make_image(VK_FORMAT_R8_UNORM, rw, rh, rw_usage);
++		st.depth_prev_valid = false;
++		st.mv = make_image(VK_FORMAT_R16G16_SFLOAT, rw, rh, rw_usage);
++		st.out = make_image(VK_FORMAT_R16G16B16A16_SFLOAT, ow, oh, rw_usage);
++		st.final_img = make_image(half ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM, ow, oh,
++			VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
++		st.res_w = rw;
++		st.res_h = rh;
++		st.res_ow = ow;
++		st.res_oh = oh;
++		st.res_fmt = cfmt;
++		st.res_inverted = st.inverted;
++		st.need_reset = true;
++
++		auto& ccmd = *m_current_command_buffer;
++		if (r2cfg().mode == 2 && g_dlss.dll && !g_dlss.failed)
++		{
++			if (!g_dlss.usable)
++			{
++				const std::wstring dir = exe_dir();
++				const auto& gpu = m_device->gpu();
++				g_dlss.usable = g_dlss.init(static_cast<VkInstance>(gpu), static_cast<VkPhysicalDevice>(gpu), *m_device,
++					vkGetInstanceProcAddr, vkGetDeviceProcAddr, dir.c_str(), dlss_log) == 1;
++				if (!g_dlss.usable)
++				{
++					g_dlss.failed = true;
++					r2log("DLSS is not available on this GPU/driver; falling back to FSR 3.1");
++				}
++			}
++			if (g_dlss.usable)
++			{
++				if (g_dlss.create(ccmd, rw, rh, ow, oh, (st.inverted ? 1 : 0) | (half ? 2 : 0), r2cfg().preset) == 1)
++				{
++					st.backend = 2;
++					r2log("%s active at %ux%u -> %ux%u (%s depth, %s)", ow > rw ? "DLSS" : "DLAA", rw, rh, ow, oh, st.inverted ? "inverted" : "standard", half ? "FP16" : "8-bit");
++				}
++				else
++				{
++					g_dlss.failed = true;
++					r2log("DLSS feature creation failed; falling back to FSR 3.1");
++				}
++			}
++		}
++
++#ifdef R2PORT_HAVE_FFX
++		if (!st.backend && g_ffx.dll && !g_ffx.failed)
++		{
++			ffxCreateBackendVKDesc be{};
++			be.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK;
++			be.vkDevice = *m_device;
++			be.vkPhysicalDevice = m_device->gpu();
++			be.vkDeviceProcAddr = vkGetDeviceProcAddr;
++
++			ffxCreateContextDescUpscale cd{};
++			cd.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
++			cd.header.pNext = &be.header;
++			cd.flags = (half ? (FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_AUTO_EXPOSURE) : FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE) |
++				(st.inverted ? FFX_UPSCALE_ENABLE_DEPTH_INVERTED : 0);
++			cd.maxRenderSize = { rw, rh };
++			cd.maxUpscaleSize = { ow, oh };
++			cd.fpMessage = ffx_message;
++			const ffxReturnCode_t rc = g_ffx.create(&g_ffx.ctx, &cd.header, nullptr);
++			if (rc == FFX_API_RETURN_OK)
++			{
++				st.backend = 1;
++				r2log("FSR 3.1 active at %ux%u -> %ux%u (%s depth, %s)", rw, rh, ow, oh, st.inverted ? "inverted" : "standard", half ? "FP16" : "8-bit");
++			}
++			else
++			{
++				g_ffx.failed = true;
++				g_ffx.ctx = nullptr;
++				r2log("FSR 3.1 context creation failed (code %u)", rc);
++			}
++		}
++#endif
++		if (!st.backend)
++		{
++			st.disabled = true;
++			r2log("no upscaler could be created; anti-aliasing disabled");
++			return;
++		}
++	}
++
++	auto& cmd = *m_current_command_buffer;
++	if (vk::is_renderpass_open(cmd)) vk::end_renderpass(cmd);
++
++	float zA = 1.f, zB = 0.f;
++	if (!m_device->get_unrestricted_depth_range_support() && m_device->get_shader_types_support().allow_float64)
++	{
++		const float n = std::fmin(st.frame_S.n, st.frame_S.f);
++		const float f = std::fmax(st.frame_S.n, st.frame_S.f);
++		if (f - n > 1e-6f) { zA = f - n; zB = n; }
++	}
++
++	// Camera motion for this frame
++	m4 T = m4_identity();
++	bool reset = st.need_reset || !st.prev_valid;
++	if (st.prev_valid)
++	{
++		m4 R;
++		u32 matched = 0, members = 0;
++		st.vote_total++;
++		m4 sci;
++		if (vote_camera(R, matched, members) && m4_inverse(m4_screen(st.frame_S), sci))
++		{
++			T = m4_mul(m4_screen(st.prev_S), m4_mul(R, sci));
++			st.vote_hits++;
++			// A camera cut still votes consistently, just with a huge motion. Measure it on distant
++			// geometry (near-plane points move a lot even for small steps) and reset the history.
++			const double zfar = (st.inverted ? 0.002 : 0.998) * zA + zB;
++			double sum = 0;
++			int pts = 0;
++			for (const double px : { -0.8, 0.0, 0.8 })
++				for (const double py : { -0.8, 0.0, 0.8 })
++				{
++					const double v[4] = { px, py, zfar, 1.0 };
++					double q[4];
++					for (int r = 0; r < 4; ++r) q[r] = T.m[r][0] * v[0] + T.m[r][1] * v[1] + T.m[r][2] * v[2] + T.m[r][3] * v[3];
++					if (std::fabs(q[3]) < 1e-9) continue;
++					sum += std::hypot(q[0] / q[3] - px, q[1] / q[3] - py) * 0.5;
++					++pts;
++				}
++			const double motion = pts ? sum / pts : 1e9;
++			if (!(motion < 0.2))
++			{
++				reset = true;
++				T = m4_identity();
++				if (r2cfg().debug) r2log("camera cut (motion %.2f of the screen): history reset", motion);
++			}
++			st.last_T = T;
++		}
++		else if (!matched)
++		{
++			reset = true; // nothing in common with the previous frame: a cut
++		}
++		else
++		{
++			T = st.last_T; // no clear majority this frame (lots of animation): assume the camera kept moving
++		}
++		if (r2cfg().debug && (st.frame % 120) == 0)
++		{
++			r2log("motion vote: %u of %u draws agree", members, matched);
++		}
++	}
++	if (reset) { st.last_T = m4_identity(); st.stat_resets++; }
++	st.need_reset = false;
++
++	const float jndc_x = 2.f * st.jx / st.vw;
++	const float jndc_y = 2.f * st.jy / st.vh;
++	float pc[28];
++	for (int c = 0; c < 4; ++c)
++		for (int r = 0; r < 4; ++r) pc[c * 4 + r] = static_cast<float>(T.m[r][c]);
++	pc[16] = jndc_x; pc[17] = jndc_y; pc[18] = st.vw; pc[19] = st.vh;
++	pc[20] = zA; pc[21] = zB; pc[22] = static_cast<float>(rw); pc[23] = static_cast<float>(rh);
++	const bool use_mask = st.backend == 2 && r2cfg().mask && g_dlss.set_mask;
++	pc[24] = (use_mask && st.depth_prev_valid && !reset) ? 1.f : 0.f;
++	pc[25] = st.inverted ? 1.f : 0.f;
++	pc[26] = pc[27] = 0.f;
++
++	// 1. Scene -> FSR/DLSS inputs
++	rt->read_barrier(cmd);
++	ds->read_barrier(cmd);
++	rt->push_layout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
++	ds->push_layout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
++	st.color->change_layout(cmd, VK_IMAGE_LAYOUT_GENERAL);
++	st.depth->change_layout(cmd, VK_IMAGE_LAYOUT_GENERAL);
++	st.mv->change_layout(cmd, VK_IMAGE_LAYOUT_GENERAL);
++	st.mask->change_layout(cmd, VK_IMAGE_LAYOUT_GENERAL);
++	st.depth_prev->change_layout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
++	vk::insert_global_memory_barrier(cmd);
++
++	auto prep = vk::get_compute_task<vk::r2aa_prep_pass>();
++	prep->in_color = rt->get_view(rsx::default_remap_vector.with_encoding(vk::VK_REMAP_IDENTITY), VK_IMAGE_ASPECT_COLOR_BIT);
++	prep->in_depth = ds->get_view(rsx::default_remap_vector.with_encoding(vk::VK_REMAP_IDENTITY), VK_IMAGE_ASPECT_DEPTH_BIT);
++	prep->out_color = plain_view(st.color.get());
++	prep->out_depth = plain_view(st.depth.get());
++	prep->out_mv = plain_view(st.mv.get());
++	prep->in_prev_depth = plain_view(st.depth_prev.get());
++	prep->out_mask = plain_view(st.mask.get());
++	prep->run(cmd, pc, rw, rh);
++
++	vk::insert_global_memory_barrier(cmd);
++	ds->pop_layout(cmd);
++	rt->pop_layout(cmd);
++
++	st.color->change_layout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
++	st.depth->change_layout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
++	st.mv->change_layout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
++	st.mask->change_layout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
++	st.out->change_layout(cmd, VK_IMAGE_LAYOUT_GENERAL);
++
++	// 2. FSR 3.1 / DLAA
++	const auto now = std::chrono::steady_clock::now();
++	float ms = st.runs ? std::chrono::duration<float, std::milli>(now - st.last_run).count() : 16.6f;
++	ms = std::fmin(std::fmax(ms, 1.f), 100.f);
++	st.last_run = now;
++	const float jx = st.jx * r2cfg().jsign;
++	const float jy = st.jy * r2cfg().jsign;
++
++	bool ok = false;
++	if (st.backend == 2)
++	{
++		if (g_dlss.set_mask)
++		{
++			if (use_mask) g_dlss.set_mask(st.mask->value, plain_view(st.mask.get())->value, st.mask->info.format);
++			else g_dlss.set_mask(VK_NULL_HANDLE, VK_NULL_HANDLE, 0);
++		}
++		ok = g_dlss.eval(cmd,
++			st.color->value, plain_view(st.color.get())->value, st.color->info.format,
++			st.depth->value, plain_view(st.depth.get())->value, st.depth->info.format,
++			st.mv->value, plain_view(st.mv.get())->value, st.mv->info.format,
++			st.out->value, plain_view(st.out.get())->value, st.out->info.format,
++			ow, oh, jx, jy, st.vw, st.vh, reset ? 1 : 0, ms) == 1;
++		if (!ok)
++		{
++			g_dlss.failed = true;
++			st.backend = 0; // recreated as FSR next time
++			st.res_w = 0;
++			r2log("DLSS evaluation failed; switching to FSR 3.1");
++		}
++	}
++#ifdef R2PORT_HAVE_FFX
++	else if (st.backend == 1)
++	{
++		ffxDispatchDescUpscale d{};
++		d.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE;
++		d.commandList = static_cast<VkCommandBuffer>(cmd);
++		d.color = ffx_res(st.color.get(), FFX_API_RESOURCE_USAGE_READ_ONLY, FFX_API_RESOURCE_STATE_COMPUTE_READ);
++		d.depth = ffx_res(st.depth.get(), FFX_API_RESOURCE_USAGE_READ_ONLY, FFX_API_RESOURCE_STATE_COMPUTE_READ);
++		d.motionVectors = ffx_res(st.mv.get(), FFX_API_RESOURCE_USAGE_READ_ONLY, FFX_API_RESOURCE_STATE_COMPUTE_READ);
++		d.output = ffx_res(st.out.get(), FFX_API_RESOURCE_USAGE_UAV, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
++		d.jitterOffset = { jx, jy };
++		d.motionVectorScale = { st.vw, st.vh };
++		d.renderSize = { rw, rh };
++		d.upscaleSize = { ow, oh };
++		d.enableSharpening = r2cfg().sharpness > 0.f;
++		d.sharpness = r2cfg().sharpness;
++		d.frameTimeDelta = ms;
++		d.preExposure = 1.f;
++		d.reset = reset;
++		d.cameraNear = 0.1f;
++		d.cameraFar = 1000.f;
++		d.cameraFovAngleVertical = 1.0f;
++		d.viewSpaceToMetersFactor = 1.f;
++		d.flags = half ? 0u : static_cast<uint32_t>(FFX_UPSCALE_FLAG_NON_LINEAR_COLOR_SRGB);
++		const ffxReturnCode_t rc = g_ffx.dispatch(&g_ffx.ctx, &d.header);
++		ok = rc == FFX_API_RETURN_OK;
++		if (!ok)
++		{
++			skip_once("FSR 3.1 dispatch failed (code " + std::to_string(rc) + ")");
++		}
++	}
++#endif
++
++	cmd.r2_invalidate_state_cache();
++	m_current_command_buffer->flags |= vk::command_buffer::cb_reload_dynamic_state;
++	// this frame's depth becomes next frame's reference for the moving-object mask
++	std::swap(st.depth, st.depth_prev);
++	st.depth_prev_valid = ok;
++	if (!ok) return;
++
++	vk::insert_global_memory_barrier(cmd);
++
++	// 3. Result (+ original alpha) -> scene colour target
++	st.out->change_layout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
++	st.final_img->change_layout(cmd, VK_IMAGE_LAYOUT_GENERAL);
++	const float mpc[8] = { swap ? 1.f : 0.f, static_cast<float>(ow), static_cast<float>(oh), static_cast<float>(r2cfg().view),
++		static_cast<float>(rw) / ow, static_cast<float>(rh) / oh, 0.f, 0.f };
++	if (half)
++	{
++		auto merge = vk::get_compute_task<vk::r2aa_merge_pass<true>>();
++		merge->in_result = plain_view(st.out.get());
++		merge->in_orig = plain_view(st.color.get());
++		merge->out_final = plain_view(st.final_img.get());
++		merge->run(cmd, mpc, ow, oh);
++	}
++	else
++	{
++		auto merge = vk::get_compute_task<vk::r2aa_merge_pass<false>>();
++		merge->in_result = plain_view(st.out.get());
++		merge->in_orig = plain_view(st.color.get());
++		merge->out_final = plain_view(st.final_img.get());
++		merge->run(cmd, mpc, ow, oh);
++	}
++	vk::insert_global_memory_barrier(cmd);
++
++	st.final_img->change_layout(cmd, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
++	if (upscaling)
++	{
++		// The scene targets are reduced-resolution surfaces; the result goes into the full-resolution target that
++		// RPCS3 creates when the scene colour target is bound next (r2aa_after_bind)
++		st.out_w = ow;
++		st.out_h = oh;
++		st.wb_pending = true;
++		cmd.r2_invalidate_state_cache();
++		m_current_command_buffer->flags |= vk::command_buffer::cb_reload_dynamic_state;
++		if (!st.runs++) r2log("first frame processed (%u scene draws, upscaling %ux%u -> %ux%u)", st.scene_draws, rw, rh, ow, oh);
++		st.stat_runs++;
++		st.last_skip.clear();
++		return;
++	}
++	rt->push_layout(cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
++	VkImageCopy region{};
++	region.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
++	region.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
++	region.extent = { rw, rh, 1 };
++	vkCmdCopyImage(cmd, st.final_img->value, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rt->value, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
++	rt->pop_layout(cmd);
++
++	cmd.r2_invalidate_state_cache();
++	m_current_command_buffer->flags |= vk::command_buffer::cb_reload_dynamic_state;
++
++	if (!st.runs++)
++	{
++		r2log("first frame processed (%u scene draws, camera motion %s)", st.scene_draws, st.vote_hits ? "found" : "not yet");
++	}
++	st.ran_ok = true;
++	st.stat_runs++;
++	st.last_skip.clear();
++}
+diff --git a/rpcs3/Emu/RSX/VK/VKR2Upscaler.h b/rpcs3/Emu/RSX/VK/VKR2Upscaler.h
+new file mode 100644
+index 0000000..4b81597
+--- /dev/null
++++ b/rpcs3/Emu/RSX/VK/VKR2Upscaler.h
+@@ -0,0 +1,22 @@
++// R2PORT: Resistance 2 port addition (not upstream RPCS3).
++// Temporal anti-aliasing of the 3D scene with AMD FSR 3.1 (FidelityFX API, amd_fidelityfx_vk.dll) or
++// NVIDIA DLAA (r2_dlss.dll, NGX). Enabled by RSX_FSR=1 (FSR 3.1) / RSX_FSR=2 (DLAA, FSR fallback);
++// everything here is inert when RSX_FSR is unset or 0. The renderer hooks live in VKGSRender (r2aa_*).
++#pragma once
++
++#include "VulkanAPI.h"
++#include <vector>
++
++namespace vk
++{
++	// 0 off, 1 FSR 3.1, 2 DLAA (from RSX_FSR)
++	int r2aa_mode();
++
++	// instance.cpp: add the instance extensions NGX needs (RSX_FSR=2 only)
++	void r2aa_extend_instance(std::vector<const char*>& extensions);
++
++	// device.cpp, right before vkCreateDevice: enable the features/extensions FSR 3.1 and NGX use.
++	// Chains its own feature structs into 'info' and re-points the extension list at 'extensions'.
++	void r2aa_extend_device(VkPhysicalDevice pdev, std::vector<const char*>& extensions,
++		VkPhysicalDeviceFeatures& features, VkPhysicalDeviceVulkan12Features& vulkan12, VkDeviceCreateInfo& info);
++}
+diff --git a/rpcs3/Emu/RSX/VK/VKRenderTargets.cpp b/rpcs3/Emu/RSX/VK/VKRenderTargets.cpp
+index aca6799..c4a5390 100644
+--- a/rpcs3/Emu/RSX/VK/VKRenderTargets.cpp
++++ b/rpcs3/Emu/RSX/VK/VKRenderTargets.cpp
+@@ -9,6 +9,10 @@
+ 
+ #include "Emu/RSX/NV47/HW/context_accessors.define.h"
+ 
++#include <cstdio>
++
++extern bool g_r2_trace_now;
++
+ namespace vk
+ {
+ 	namespace surface_cache_utils
+@@ -1068,9 +1072,18 @@ namespace vk
+ 				typeless_info.src_scaling_hint = f32(src_bpp) / dst_bpp;
+ 			}
+ 
++			const bool preset = section.width != 0;
+ 			section.init_transfer(this);
+ 			auto src_area = section.src_rect();
+ 			auto dst_area = section.dst_rect();
++			{
++				if (::g_r2_trace_now)
++					std::fprintf(stderr, "[r2aa] T inherit %08x(%ux%u n%ux%u %u%%) <- %08x(%ux%u n%ux%u %u%%) src %d,%d-%d,%d dst %d,%d-%d,%d%s\n",
++						base_addr, width(), height(), get_surface_width(), get_surface_height(), resolution_scaling_config.scale_percent,
++						src_texture->base_addr, src_texture->width(), src_texture->height(), src_texture->get_surface_width(), src_texture->get_surface_height(),
++						src_texture->resolution_scaling_config.scale_percent,
++						src_area.x1, src_area.y1, src_area.x2, src_area.y2, dst_area.x1, dst_area.y1, dst_area.x2, dst_area.y2, preset ? " preset" : "");
++			}
+ 
+ 			if (g_cfg.video.antialiasing_level != msaa_level::none)
+ 			{
+diff --git a/rpcs3/Emu/RSX/VK/VKTexture.cpp b/rpcs3/Emu/RSX/VK/VKTexture.cpp
+index ac91c2e..17308eb 100644
+--- a/rpcs3/Emu/RSX/VK/VKTexture.cpp
++++ b/rpcs3/Emu/RSX/VK/VKTexture.cpp
+@@ -16,6 +16,16 @@
+ 
+ #include "util/asm.hpp"
+ 
++#include <cstdio>
++#ifdef _WIN32
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#include <windows.h> // R2PORT: RtlCaptureStackBackTrace for the out-of-bounds blit diagnostic
++#endif
++
++bool g_r2_trace_now = false; // R2PORT: set by the upscaler on traced frames (RSX_AA_TRACE)
++
+ namespace vk
+ {
+ 	static void gpu_swap_bytes_impl(const vk::command_buffer& cmd, vk::buffer* buf, u32 element_size, u32 data_offset, u32 data_length)
+@@ -557,6 +567,9 @@ namespace vk
+ 		const rsx::image_copy_subresource_layers& mip_layers,
+ 		VkImageAspectFlags src_transfer_mask, VkImageAspectFlags dst_transfer_mask)
+ 	{
++		if (g_r2_trace_now)
++			std::printf("[r2aa] T copy %dx%d+%d+%d of %ux%u -> %dx%d+%d+%d of %ux%u\n", int(src_rect.width), int(src_rect.height), int(src_rect.x), int(src_rect.y),
++				src->width(), src->height(), int(dst_rect.width), int(dst_rect.height), int(dst_rect.x), int(dst_rect.y), dst->width(), dst->height());
+ 		// NOTE: src_aspect should match dst_aspect according to spec but some drivers seem to work just fine with the mismatch
+ 		if (const u32 aspect_bridge = (src->aspect() | dst->aspect());
+ 			(aspect_bridge & VK_IMAGE_ASPECT_COLOR_BIT) == 0 &&
+@@ -635,6 +648,39 @@ namespace vk
+ 		bool compatible_formats,
+ 		VkFilter filter)
+ 	{
++		if (g_r2_trace_now)
++			std::printf("[r2aa] T blit %dx%d+%d+%d of %ux%u -> %dx%d+%d+%d of %ux%u\n", int(src_rect.width), int(src_rect.height), int(src_rect.x), int(src_rect.y),
++				src->width(), src->height(), int(dst_rect.width), int(dst_rect.height), int(dst_rect.x), int(dst_rect.y), dst->width(), dst->height());
++		// R2PORT: mixed-scale surfaces (reduced-resolution scene section) can yield regions outside the image;
++		// an out-of-bounds blit loses the device, so drop it
++		{
++			auto outside = [](const coord3i& r, const vk::image* img, u32 mip)
++			{
++				const s64 w = std::max<s64>(1, img->width() >> mip), h = std::max<s64>(1, img->height() >> mip);
++				const s64 x0 = std::min<s64>(r.x, s64{r.x} + r.width), x1 = std::max<s64>(r.x, s64{r.x} + r.width);
++				const s64 y0 = std::min<s64>(r.y, s64{r.y} + r.height), y1 = std::max<s64>(r.y, s64{r.y} + r.height);
++				return x0 < 0 || y0 < 0 || x1 > w || y1 > h;
++			};
++			if (outside(src_rect, src, mip_layers.src_mip_level) || outside(dst_rect, dst, mip_layers.dst_mip_level))
++			{
++				static u32 n = 0;
++				if (n++ < 12)
++				{
++					std::printf("[r2blit] dropped out-of-bounds blit src %dx%d+%d+%d of %ux%u -> dst %dx%d+%d+%d of %ux%u (fmt %d -> %d) stack:",
++						int(src_rect.width), int(src_rect.height), int(src_rect.x), int(src_rect.y), src->width(), src->height(),
++						int(dst_rect.width), int(dst_rect.height), int(dst_rect.x), int(dst_rect.y), dst->width(), dst->height(),
++						static_cast<int>(src->format()), static_cast<int>(dst->format()));
++					void* frames[16];
++					const u16 nf = RtlCaptureStackBackTrace(1, 16, frames, nullptr);
++					const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
++					for (u16 i = 0; i < nf; i++) std::printf(" 0x%llx", static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(frames[i]) - base + 0x140000000ull));
++					std::printf("\n");
++					std::fflush(stdout);
++				}
++				return;
++			}
++		}
++
+ 		// Compatible formats is now optional (false), so we should check the formas again just in case.
+ 		compatible_formats |= (src->format() == dst->format());
+ 
+@@ -1603,8 +1649,33 @@ namespace vk
+ 
+ 		if (dst_area.x1 < 0 || dst_area.x2 > static_cast<s32>(real_dst->width()) || dst_area.y1 < 0 || dst_area.y2 > static_cast<s32>(real_dst->height()))
+ 		{
+-			rsx_log.error("Blit request denied because the destination region does not fit!");
+-			return;
++			// R2PORT: clip to the destination image (scaling the source rect accordingly) instead of dropping the blit
++			const s32 dw = static_cast<s32>(real_dst->width()), dh = static_cast<s32>(real_dst->height());
++			rsx_log.warning("R2PORT: blit dst overflow: src=(%d,%d)-(%d,%d) of %ux%u, dst=(%d,%d)-(%d,%d) of %dx%d, typeless_src=%d typeless_dst=%d",
++				src_area.x1, src_area.y1, src_area.x2, src_area.y2, real_src->width(), real_src->height(),
++				dst_area.x1, dst_area.y1, dst_area.x2, dst_area.y2, dw, dh, real_src != src, real_dst != dst);
++
++			const double sx = static_cast<double>(src_area.width()) / dst_area.width();
++			const double sy = static_cast<double>(src_area.height()) / dst_area.height();
++			const s32 cx1 = std::max(dst_area.x1, 0), cy1 = std::max(dst_area.y1, 0);
++			const s32 cx2 = std::min(dst_area.x2, dw), cy2 = std::min(dst_area.y2, dh);
++			if (cx2 <= cx1 || cy2 <= cy1)
++			{
++				rsx_log.error("Blit request denied because the destination region does not fit!");
++				return;
++			}
++
++			src_area.x2 = src_area.x1 + static_cast<s32>((cx2 - dst_area.x1) * sx);
++			src_area.y2 = src_area.y1 + static_cast<s32>((cy2 - dst_area.y1) * sy);
++			src_area.x1 += static_cast<s32>((cx1 - dst_area.x1) * sx);
++			src_area.y1 += static_cast<s32>((cy1 - dst_area.y1) * sy);
++			dst_area.x1 = cx1; dst_area.y1 = cy1; dst_area.x2 = cx2; dst_area.y2 = cy2;
++
++			if (src_area.x2 <= src_area.x1 || src_area.y2 <= src_area.y1)
++			{
++				rsx_log.error("Blit request denied because the destination region does not fit!");
++				return;
++			}
+ 		}
+ 
+ 		if (xfer_info.flip_horizontal)
+diff --git a/rpcs3/Emu/RSX/VK/VKTextureCache.cpp b/rpcs3/Emu/RSX/VK/VKTextureCache.cpp
+index 0ecf55d..bea913c 100644
+--- a/rpcs3/Emu/RSX/VK/VKTextureCache.cpp
++++ b/rpcs3/Emu/RSX/VK/VKTextureCache.cpp
+@@ -1050,7 +1050,12 @@ namespace vk
+ 		const rsx::image_section_attributes_t search_desc = { .gcm_format = gcm_format, .width = width, .height = height, .depth = section_depth, .mipmaps = mipmaps };
+ 		const bool allow_dirty = (context != rsx::texture_upload_context::framebuffer_storage);
+ 		cached_texture_section& region = *find_cached_texture(rsx_range, search_desc, true, true, allow_dirty);
+-		ensure(!region.is_locked());
++		if (region.is_locked()) // R2PORT: recover instead of killing the RSX thread
++		{
++			rsx_log.warning("R2PORT: create_new_texture found locked section at 0x%x (len 0x%x); unprotecting", rsx_range.start, rsx_range.length());
++			region.unprotect();
++			region.set_dirty(true);
++		}
+ 
+ 		vk::viewable_image* image = nullptr;
+ 		if (region.exists())
+@@ -1209,7 +1214,12 @@ namespace vk
+ 		bool memory_load)
+ 	{
+ 		auto& region = *find_cached_texture(rsx_range, { .gcm_format = RSX_GCM_FORMAT_IGNORED }, true, false, false);
+-		ensure(!region.is_locked());
++		if (region.is_locked()) // R2PORT: recover instead of killing the RSX thread
++		{
++			rsx_log.warning("R2PORT: create_nul_section found locked section at 0x%x; unprotecting", rsx_range.start);
++			region.unprotect();
++			region.set_dirty(true);
++		}
+ 
+ 		// Prepare section
+ 		region.reset(rsx_range);
+diff --git a/rpcs3/Emu/RSX/VK/vkutils/commands.h b/rpcs3/Emu/RSX/VK/vkutils/commands.h
+index 81f65b3..494acdf 100644
+--- a/rpcs3/Emu/RSX/VK/vkutils/commands.h
++++ b/rpcs3/Emu/RSX/VK/vkutils/commands.h
+@@ -122,6 +122,9 @@ namespace vk
+ 		void clear_flags() { flags = 0; }
+ 		void set_flag(command_buffer_data_flag flag) { flags |= flag; }
+ 
++		// R2PORT: external code (FSR 3.1 / DLSS) binds its own pipelines and descriptor sets; forget the cached ones
++		void r2_invalidate_state_cache() { clear_state_cache(); }
++
+ 		operator VkCommandBuffer() const
+ 		{
+ 			return commands;
+diff --git a/rpcs3/Emu/RSX/VK/vkutils/device.cpp b/rpcs3/Emu/RSX/VK/vkutils/device.cpp
+index dae7b29..9f11206 100644
+--- a/rpcs3/Emu/RSX/VK/vkutils/device.cpp
++++ b/rpcs3/Emu/RSX/VK/vkutils/device.cpp
+@@ -1,5 +1,6 @@
+ #include "device.h"
+ #include "instance.h"
++#include "../VKR2Upscaler.h" // R2PORT
+ #include "util/logs.hpp"
+ #include "Emu/system_config.h"
+ #include <vulkan/vulkan_core.h>
+@@ -609,6 +610,24 @@ namespace vk
+ 		{
+ 			requested_extensions.push_back(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
+ 		}
++
++#ifdef _WIN32
++		// R2PORT: the swapchain chains VkSurfaceFullScreenExclusiveInfoEXT when the exclusive fullscreen
++		// mode is specified, which needs the device extension enabled.
++		if (g_cfg.video.vk.exclusive_fullscreen_mode != vk_exclusive_fs_mode::unspecified)
++		{
++			u32 n = 0;
++			vkEnumerateDeviceExtensionProperties(*pgpu, nullptr, &n, nullptr);
++			std::vector<VkExtensionProperties> props(n);
++			vkEnumerateDeviceExtensionProperties(*pgpu, nullptr, &n, props.data());
++			for (const auto& p : props)
++				if (!strcmp(p.extensionName, "VK_EXT_full_screen_exclusive"))
++				{
++					requested_extensions.push_back("VK_EXT_full_screen_exclusive");
++					break;
++				}
++		}
++#endif
+ 		
+ #ifdef __APPLE__
+ 		if (pgpu->optional_features_support.portability)
+@@ -871,6 +890,9 @@ namespace vk
+ 			device.pNext = &provoking_vertex_info;
+ 		}
+ 
++		// R2PORT: FSR 3.1 / DLSS device features and extensions (no-op unless RSX_FSR is set)
++		vk::r2aa_extend_device(*pgpu, requested_extensions, enabled_features, vulkan12_features, device);
++
+ 		if (auto error = vkCreateDevice(*pgpu, &device, nullptr, &dev))
+ 		{
+ 			dump_debug_info(requested_extensions, enabled_features);
+diff --git a/rpcs3/Emu/RSX/VK/vkutils/image.cpp b/rpcs3/Emu/RSX/VK/vkutils/image.cpp
+index 9197c5a..3ea8528 100644
+--- a/rpcs3/Emu/RSX/VK/vkutils/image.cpp
++++ b/rpcs3/Emu/RSX/VK/vkutils/image.cpp
+@@ -7,6 +7,9 @@
+ 
+ #include "../VKResourceManager.h"
+ #include <memory>
++#ifdef _WIN32
++#include <windows.h> // R2PORT: RtlCaptureStackBackTrace
++#endif
+ 
+ namespace vk
+ {
+@@ -37,9 +40,22 @@ namespace vk
+ 		{
+ 			// Longest dimension exceeds the limit. Can happen when using MSAA + very high resolution scaling
+ 			// Just kill the application at this point.
++			{
++				// R2PORT: log the call stack as exe offsets (symbolize with cdb -z ... ln Resistance2+0xOFF)
++				void* frames[48];
++				const USHORT n = RtlCaptureStackBackTrace(0, 48, frames, nullptr);
++				const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
++				std::string bt;
++				for (USHORT i = 0; i < n; i++)
++					bt += fmt::format(" +0x%x", reinterpret_cast<uintptr_t>(frames[i]) - base);
++				rsx_log.error("R2PORT oversized image backtrace:%s", bt);
++			}
+ 			fmt::throw_exception(
+ 				"The renderer requested an image larger than the limit allowed for by your GPU hardware. "
+-				"Turn down your resolution scale and/or disable MSAA to fit within the image budget.");
++				"Turn down your resolution scale and/or disable MSAA to fit within the image budget. "
++				"(R2PORT: type=%d %ux%ux%u limit=%u flags=0x%x format=%d)", // R2PORT
++				static_cast<int>(info.imageType), info.extent.width, info.extent.height, info.extent.depth,
++				dim_limit, info.flags, static_cast<int>(info.format));
+ 		}
+ 	}
+ 
+diff --git a/rpcs3/Emu/RSX/VK/vkutils/instance.cpp b/rpcs3/Emu/RSX/VK/vkutils/instance.cpp
+index e59c249..0902eff 100644
+--- a/rpcs3/Emu/RSX/VK/vkutils/instance.cpp
++++ b/rpcs3/Emu/RSX/VK/vkutils/instance.cpp
+@@ -1,5 +1,6 @@
+ #include "stdafx.h"
+ #include "instance.h"
++#include "../VKR2Upscaler.h" // R2PORT
+ 
+ #include "Emu/system_config.h"
+ 
+@@ -156,6 +157,7 @@ namespace vk
+ 
+ #ifdef _WIN32
+ 			extensions.push_back(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
++			vk::r2aa_extend_instance(extensions); // R2PORT: NGX (DLSS) instance extensions when RSX_FSR=2
+ #elif defined(__APPLE__)
+ 			extensions.push_back(VK_EXT_METAL_SURFACE_EXTENSION_NAME);
+ #else
+diff --git a/rpcs3/Emu/RSX/rsx_methods.cpp b/rpcs3/Emu/RSX/rsx_methods.cpp
+index c0a9643..dd47406 100644
+--- a/rpcs3/Emu/RSX/rsx_methods.cpp
++++ b/rpcs3/Emu/RSX/rsx_methods.cpp
+@@ -10,6 +10,9 @@
+ #include "Emu/RSX/NV47/HW/nv47_sync.hpp"
+ #include "Emu/RSX/NV47/HW/context_accessors.define.h" // TODO: Context objects belong in FW not HW
+ 
++// R2PORT: guest handlers (flip/vblank/user/queue) run on the port runtime's GCM interrupt thread.
++extern "C" void r2port_rsx_guest_call(u32 opd, u32 arg);
++
+ namespace rsx
+ {
+ 	std::array<rsx_method_t, 0x10000 / 4> methods{};
+@@ -44,15 +47,7 @@ namespace rsx
+ 
+ 		if (auto ptr = RSX(ctx)->queue_handler)
+ 		{
+-			RSX(ctx)->intr_thread->cmd_list
+-			({
+-				{ ppu_cmd::set_args, 1 }, u64{1},
+-				{ ppu_cmd::lle_call, ptr },
+-				{ ppu_cmd::sleep, 0 }
+-			});
+-
+-			RSX(ctx)->intr_thread->cmd_notify.store(1);
+-			RSX(ctx)->intr_thread->cmd_notify.notify_one();
++			r2port_rsx_guest_call(ptr.addr(), static_cast<u32>(1)); // R2PORT
+ 		}
+ 
+ 		RSX(ctx)->reset();
+@@ -74,15 +69,7 @@ namespace rsx
+ 
+ 		if (auto ptr = RSX(ctx)->user_handler)
+ 		{
+-			RSX(ctx)->intr_thread->cmd_list
+-			({
+-				{ ppu_cmd::set_args, 1 }, u64{arg},
+-				{ ppu_cmd::lle_call, ptr },
+-				{ ppu_cmd::sleep, 0 }
+-			});
+-
+-			RSX(ctx)->intr_thread->cmd_notify.store(1);
+-			RSX(ctx)->intr_thread->cmd_notify.notify_one();
++			r2port_rsx_guest_call(ptr.addr(), static_cast<u32>(arg)); // R2PORT
+ 		}
+ 	}
+ 
+diff --git a/rpcs3/util/asm.hpp b/rpcs3/util/asm.hpp
+index 75b1d37..848f47f 100644
+--- a/rpcs3/util/asm.hpp
++++ b/rpcs3/util/asm.hpp
+@@ -17,6 +17,26 @@
+ #endif
+ #endif
+ 
++#if defined(_MSC_VER) && defined(__clang__)
++// R2PORT: clang-cl has no _div128/_udiv128 intrinsics; provide them with div/idiv
++// (same semantics as the MSVC intrinsics, and no compiler-rt __udivti3 dependency).
++inline long long _div128(long long high, long long low, long long divisor, long long* remainder)
++{
++	long long q, r;
++	__asm__("idivq %4" : "=a"(q), "=d"(r) : "a"(low), "d"(high), "rm"(divisor) : "cc");
++	*remainder = r;
++	return q;
++}
++
++inline unsigned long long _udiv128(unsigned long long high, unsigned long long low, unsigned long long divisor, unsigned long long* remainder)
++{
++	unsigned long long q, r;
++	__asm__("divq %4" : "=a"(q), "=d"(r) : "a"(low), "d"(high), "rm"(divisor) : "cc");
++	*remainder = r;
++	return q;
++}
++#endif
++
+ namespace utils
+ {
+ 	// Try to prefetch to Level 2 cache since it's not split to data/code on most processors
+diff --git a/rpcs3/util/types.hpp b/rpcs3/util/types.hpp
+index f893142..768d636 100644
+--- a/rpcs3/util/types.hpp
++++ b/rpcs3/util/types.hpp
+@@ -261,6 +261,12 @@ using u128 = __uint128_t;
+ using s128 = __int128_t;
+ #else
+ 
++#ifdef __clang__
++// R2PORT: clang-cl defines the SSE vector types as vector typedefs and the carry
++// intrinsics as constexpr builtins, so MSVC's forward declarations conflict.
++#include <intrin.h>
++#include <immintrin.h>
++#else
+ extern "C"
+ {
+ 	union __m128;
+@@ -273,6 +279,7 @@ extern "C"
+ 	u64 __shiftright128(u64, u64, uchar);
+ 	u64 _umul128(u64, u64, u64*);
+ }
++#endif
+ 
+ // Unsigned 128-bit integer implementation (TODO)
+ struct alignas(16) u128
+diff --git a/rpcs3/util/vm_native.cpp b/rpcs3/util/vm_native.cpp
+index 2bd422b..12c48a6 100644
+--- a/rpcs3/util/vm_native.cpp
++++ b/rpcs3/util/vm_native.cpp
+@@ -436,6 +436,12 @@ namespace utils
+ 			return;
+ 		}
+ 
++		// R2PORT: the port commits guest memory lazily (SEC_RESERVE section). Commit the range, then protect.
++		if (::VirtualAlloc(pointer, size, MEM_COMMIT, PAGE_READWRITE) && ::VirtualProtect(pointer, size, +prot, &old))
++		{
++			return;
++		}
++
+ 		for (u64 addr = reinterpret_cast<u64>(pointer), end = addr + size; addr < end;)
+ 		{
+ 			const u64 boundary = (addr + 0x10000) & -0x10000;
