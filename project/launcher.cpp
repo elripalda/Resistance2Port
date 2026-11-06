@@ -738,6 +738,50 @@ static int hit(float x, float y)
 }
 
 // ---- painting -------------------------------------------------------------
+// The sidebar art: the game's own key art (PS3_GAME\PIC1.PNG, a 1920x1080 picture copied from the
+// player's disc by Setup.bat; nothing from the game is shipped). Absent before Setup, then the plain
+// sidebar is drawn. The scaled, faded picture is kept between paints and redone when the size changes.
+static Bitmap* g_art;
+static Bitmap* g_art_scaled;
+static void load_art()
+{
+    const std::string p = path_of("gamefiles\\PS3_GAME\\PIC1.PNG");
+    Bitmap* b = Bitmap::FromFile(W(p).c_str());
+    if (b && b->GetLastStatus() == Ok && b->GetWidth() >= 1280 && b->GetHeight() >= 720) g_art = b;
+    else delete b;
+}
+static void draw_sidebar_art(Graphics& g, float sw, float ch)
+{
+    if (!g_art) return;
+    const float top = SF(285);
+    const int aw = (int)sw, ah = (int)(ch - top);
+    if (aw < 16 || ah < 16) return;
+    if (!g_art_scaled || (int)g_art_scaled->GetWidth() != aw || (int)g_art_scaled->GetHeight() != ah) {
+        delete g_art_scaled;
+        g_art_scaled = new Bitmap(aw, ah, PixelFormat32bppPARGB);
+        Graphics cg(g_art_scaled);
+        cg.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+        cg.SetPixelOffsetMode(PixelOffsetModeHalf);
+        // the soldier's glowing eye and the side of his face (in 1920x1080 picture units), cropped to
+        // fill the area; a taller window shows more of the picture below
+        const float kx = g_art->GetWidth() / 1920.f, ky = g_art->GetHeight() / 1080.f;
+        float cw = 460, chh = cw * ah / aw;
+        if (chh > 950) { chh = 950; cw = chh * aw / ah; }
+        const float cx = 1230 - cw / 2, cy = 60;
+        ImageAttributes ia; ia.SetWrapMode(WrapModeTileFlipXY);   // no dark fringe at the edges
+        cg.DrawImage(g_art, RectF(0, 0, (REAL)aw, (REAL)ah), cx * kx, cy * ky, cw * kx, chh * ky, UnitPixel, &ia);
+        // darkened, and faded in from the sidebar's color under the menu
+        const float fade = SF(140), dark = 0.25f;
+        for (int y = 0; y < ah; y++) {
+            float a = std::min(1.f, y / fade);
+            a = a * a * (3 - 2 * a);
+            SolidBrush b(Color((BYTE)(255 * (1 - a * (1 - dark))), C_SIDEBAR.GetR(), C_SIDEBAR.GetG(), C_SIDEBAR.GetB()));
+            cg.FillRectangle(&b, 0, y, aw, 1);
+        }
+    }
+    g.DrawImage(g_art_scaled, 0.f, top);
+}
+
 static void draw_chevron(Graphics& g, float cx, float cy, float sz, const Color& c, bool up = false)
 {
     Pen p(c, SF(1.8)); p.SetLineJoin(LineJoinRound); p.SetStartCap(LineCapRound); p.SetEndCap(LineCapRound);
@@ -894,6 +938,7 @@ static void paint(HDC hdc)
     // ---- sidebar ----
     {
         SolidBrush b(C_SIDEBAR); g.FillRectangle(&b, 0.f, 0.f, SF(SIDEBAR), ch);
+        draw_sidebar_art(g, SF(SIDEBAR), ch);
         {   // the title, shrunk if the font is wider than the sidebar
             const float avail = SF(SIDEBAR - 46);
             RectF m; g.MeasureString(L"RESISTANCE", -1, f_title, PointF(0, 0), &m);
@@ -1185,6 +1230,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR cmd, int show)
     ctl_load();
 
     GdiplusStartupInput gsi; GdiplusStartup(&g_gdip, &gsi, NULL);
+    load_art();
 
     WNDCLASSEXA wc = { sizeof wc };
     wc.lpfnWndProc = wndproc; wc.hInstance = inst;
@@ -1214,6 +1260,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR cmd, int show)
 
     MSG m;
     while (GetMessageA(&m, NULL, 0, 0) > 0) { TranslateMessage(&m); DispatchMessageA(&m); }
+    delete g_art_scaled; delete g_art;
     GdiplusShutdown(g_gdip);
     return 0;
 }
