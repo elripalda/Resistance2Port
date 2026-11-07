@@ -121,8 +121,11 @@ if (-not (Test-Path (Join-Path $usr 'EBOOT.BIN'))) {
         if ($LASTEXITCODE -ge 8) { Fail "Copying the game files failed (robocopy code $LASTEXITCODE). Is there enough free space?" }
     }
 }
-# the PS3's hard-drive cache and game-data folders the game expects to exist
-New-Item -ItemType Directory -Force -Path (Join-Path $gf "cache\$TitleId"), (Join-Path $gf "game\$TitleId\USRDIR") | Out-Null
+# the PS3's hard-drive cache folder the game expects to exist. The game-data folder (game\<id>) is
+# left to the game's own first-run install: an empty one made here reads as installed-but-corrupted.
+New-Item -ItemType Directory -Force -Path (Join-Path $gf "cache\$TitleId") | Out-Null
+$gd = Join-Path $gf "game\$TitleId"
+if ((Test-Path $gd) -and -not (Get-ChildItem $gd -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1)) { Remove-Item $gd -Recurse -Force }
 Info "Game files: $gf"
 
 # ---------------------------------------------------------------- 3. decrypt
@@ -197,6 +200,23 @@ Info "Fetching RPCS3's renderer source and applying the port's patch..."
 if ($LASTEXITCODE -ne 0) { Fail "Could not download or patch the RPCS3 source (no internet?)." }
 & cmd /c "`"$Port\build.bat`" nopause"
 if ($LASTEXITCODE -ne 0) { Fail "The build failed - see logs\build.log and logs\build_game.log." }
+
+$desktop = [Environment]::GetFolderPath('Desktop')
+$lnk = Join-Path $desktop 'Resistance 2.lnk'
+if ($desktop -and -not (Test-Path -LiteralPath $lnk)) {
+    $ans = Read-Host "Create a desktop shortcut to the launcher? [Y/n]"
+    if ($ans -notmatch '^\s*n') {
+        try {
+            $sc = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
+            $sc.TargetPath = Join-Path $Port 'Launcher.exe'
+            $sc.WorkingDirectory = $Port
+            $sc.IconLocation = (Join-Path $Port 'Resistance2.ico') + ',0'
+            $sc.Description = 'Resistance 2 - PC port launcher'
+            $sc.Save()
+            Info "Desktop shortcut created: $lnk"
+        } catch { Info "Could not create the desktop shortcut ($_)." }
+    }
+}
 
 Write-Host ""
 Write-Host "SETUP COMPLETE. Start the game with Launcher.exe." -ForegroundColor Green

@@ -72,8 +72,23 @@ static void init_default_mappings(void)
 
     cellfs_add_path_mapping("/dev_hdd0/",  "gamedata/dev_hdd0/");
     const char* disc_root = getenv("PS3_VFS_ROOT");
+    const int have_root = disc_root && *disc_root;
+    /* Game data (/dev_hdd0/game) lives where ppu_fs.cpp and cellGame put it:
+     * $PS3_HDD0_ROOT/game, else <VFS root>/game. Mapping it to ./gamedata here
+     * split one guest path in two: Resistance 2 installs its game data through
+     * ppu_fs, then its cellFsRename of the icon to ICON0.PNG looked in
+     * ./gamedata and failed. Saves (/dev_hdd0/home) keep their old place. */
+    const char* hdd0 = getenv("PS3_HDD0_ROOT");
+    if ((hdd0 && *hdd0) || have_root) {
+        char game[CELL_FS_MAX_FS_PATH_LENGTH];
+        snprintf(game, sizeof game, "%s", hdd0 && *hdd0 ? hdd0 : disc_root);
+        size_t gl = strlen(game);
+        while (gl > 1 && (game[gl - 1] == '/' || game[gl - 1] == '\\')) game[--gl] = '\0';
+        snprintf(game + gl, sizeof game - gl, "/game/");
+        cellfs_add_path_mapping("/dev_hdd0/game/", game);
+    }
     cellfs_add_path_mapping("/dev_bdvd/",
-                           disc_root && *disc_root ? disc_root : "gamedata/dev_bdvd/");
+                           have_root ? disc_root : "gamedata/dev_bdvd/");
     cellfs_add_path_mapping("/dev_flash/", "gamedata/dev_flash/");
     cellfs_add_path_mapping("/app_home/",  "gamedata/app_home/");
     cellfs_add_path_mapping("/dev_usb000/","gamedata/dev_usb/");

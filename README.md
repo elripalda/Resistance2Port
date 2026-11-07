@@ -25,7 +25,7 @@ A static recompilation of the PS3 game *Resistance 2* into a native Windows prog
    - download RPCS3's source at a fixed version and apply this port's renderer patch (`ps3recomp/patches/r2-rpcs3.patch`);
    - generate the game code from your copy and build the game.
 
-   The first run takes a while: tool installs plus a 20–60 minute build.
+   The first run takes a while: tool installs plus a 20–60 minute build. At the end, Setup offers to put a "Resistance 2" shortcut to the launcher on your desktop.
 3. Play with **`Launcher.exe`**. It has the settings (display mode, resolution, frame rate, VSync, anti-aliasing, upscaling, texture filtering, sharpening) and the key bindings.
 
 You only need to run Setup again after downloading a newer version of the port; otherwise just use the launcher.

@@ -43,7 +43,14 @@ int main(int argc,char**argv) {
     CHECK(cellfs_translate_path(guest,NULL,sizeof(out))==-1);
     if (!strcmp(mode,"env")) {
         CHECK(cellfs_translate_path("/dev_hdd0/game/x",out,sizeof(out))==0);
-        CHECK(!strcmp(out,"./gamedata/dev_hdd0/game/x"));
+        /* /dev_hdd0/game shares the VFS root with ppu_fs, so game data written
+         * through one filesystem is visible to the other; saves stay put. */
+        char want[1024]; snprintf(want,sizeof(want),"%s/game/x",root);
+        for (char* p=want; *p; p++) if (*p=='\\') *p='/';
+        for (char* p=out; *p; p++) if (*p=='\\') *p='/';
+        CHECK(!strcmp(out,want));
+        CHECK(cellfs_translate_path("/dev_hdd0/home/s",out,sizeof(out))==0);
+        CHECK(!strcmp(out,"./gamedata/dev_hdd0/home/s"));
         /* Real fallback expands USRDIR into PS3_GAME/USRDIR. Its result must
          * not report success after truncating into the caller's buffer. */
         char direct[1024]; snprintf(direct,sizeof(direct),"%s/USRDIR/movie.pam",root);

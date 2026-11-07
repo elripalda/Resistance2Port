@@ -7,6 +7,7 @@
 #include "cellGame.h"
 #include "../../runtime/ppu/ppu_memory.h"   /* vm_base, vm_write32 (guest mem) */
 #include "ps3emu/guest_call.h"              /* g_ps3_guest_caller (funcStat dispatch) */
+#include "ps3_psf.h"                        /* PARAM.SFO writer for created game data */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -518,11 +519,17 @@ static s32 gamedata_stat_callback(const char* tag, u32 version, uint32_t dir_ea,
     snprintf((char*)(vm_base + get + 0x427), 96, "/dev_hdd0/game/%s/USRDIR", dir);   /* gameDataPath */
     vm_write32(get + 0xB9C, 0xFFFFFFFFu);                  /* sizeKB = NOTCALC (-1) */
     vm_write32(get + 0xBA0, 0);                            /* sysSizeKB */
-    /* getParam (CellGameDataSystemFileParam @0x860): title / titleId / dataVersion / attribute. */
+    /* getParam (CellGameDataSystemFileParam @0x860): title / titleId / dataVersion / attribute.
+     * Installed data reports its own PARAM.SFO (as RPCS3 does); new data the disc's. */
     uint32_t gp = get + 0x860;
-    snprintf((char*)(vm_base + gp + 0x000), 128, "%s", s_title);
-    snprintf((char*)(vm_base + gp + 0xA80), 10,  "%s", dir);        /* titleId = dir (e.g. BLUS30443) */
-    snprintf((char*)(vm_base + gp + 0xA8C), 6,   "%s", s_app_ver);  /* dataVersion */
+    char sfo[CELL_GAME_PATH_MAX], v[256];
+    snprintf(sfo, sizeof sfo, "%s/%s/PARAM.SFO", content_root(), dir);
+    snprintf((char*)(vm_base + gp + 0x000), 128, "%s",
+             sfo_read_string(sfo, "TITLE", v, sizeof v) == 0 ? v : s_title);
+    snprintf((char*)(vm_base + gp + 0xA80), 10,  "%s",
+             sfo_read_string(sfo, "TITLE_ID", v, sizeof v) == 0 ? v : dir);
+    snprintf((char*)(vm_base + gp + 0xA8C), 6,   "%s",
+             sfo_read_string(sfo, "VERSION", v, sizeof v) == 0 ? v : s_app_ver);
     vm_write32(gp + 0xA98, 0);                                      /* attribute = CELL_GAMEDATA_ATTR_NORMAL */
 
     /* StatSet left zeroed (setParam = NULL: callback chooses whether to modify). */
@@ -532,6 +539,52 @@ static s32 gamedata_stat_callback(const char* tag, u32 version, uint32_t dir_ea,
     s32 result = (s32)vm_read32(cb + 0x000);
     printf("[cellGame] %s: funcStat returned result=%d\n", tag, result);
     return result;
+}
+
+/* Write the game data's PARAM.SFO from the setParam the callback filled in
+ * (RPCS3 cellGameDataCheckCreate2). Firmware does this when it creates the
+ * data; without the file, Resistance 2 calls its installed data corrupt.
+ * Returns 0 on success, -1 if the callback set no setParam or the write failed. */
+static int gamedata_write_sfo(const char* sfo_path, const char* dir)
+{
+    const uint32_t sp = vm_read32(GAMEDATA_CB_BASE + 0x20 + 0xC00);   /* StatSet.setParam */
+    if (!sp) {
+        printf("[cellGame] DataCheckCreate2: no setParam, PARAM.SFO not written\n");
+        return -1;
+    }
+    char title[128], ids[10], ver[6], lang[20][128];
+    #define GSTR(dst, off) do { memcpy(dst, vm_base + sp + (off), sizeof dst); dst[sizeof dst - 1] = 0; } while (0)
+    GSTR(title, 0x000);
+    GSTR(ids,   0xA80);
+    GSTR(ver,   0xA8C);
+    for (int i = 0; i < 20; i++) GSTR(lang[i], 0x080 + 128 * i);
+    #undef GSTR
+    const uint32_t parental = vm_read32(sp + 0xA94);
+    if (!ids[0]) snprintf(ids, sizeof ids, "%s", dir);
+
+    /* Alphabetical key order, as PSF requires: TITLE < TITLE_00..19 < TITLE_ID. */
+    static char keys[20][9];
+    ps3_psf_item it[26];
+    uint32_t n = 0;
+    it[n++] = (ps3_psf_item){"CATEGORY",       PS3_PSF_UTF8,  4,   (const uint8_t*)"GD", 0, 0};
+    it[n++] = (ps3_psf_item){"PARENTAL_LEVEL", PS3_PSF_INT32, 4,   NULL,                 4, parental};
+    it[n++] = (ps3_psf_item){"TITLE",          PS3_PSF_UTF8,  128, (const uint8_t*)title, 0, 0};
+    for (int i = 0; i < 20; i++) {
+        if (!lang[i][0]) continue;
+        snprintf(keys[i], sizeof keys[i], "TITLE_%02d", i);
+        it[n++] = (ps3_psf_item){keys[i], PS3_PSF_UTF8, 128, (const uint8_t*)lang[i], 0, 0};
+    }
+    it[n++] = (ps3_psf_item){"TITLE_ID",       PS3_PSF_UTF8,  16,  (const uint8_t*)ids,  0, 0};
+    it[n++] = (ps3_psf_item){"VERSION",        PS3_PSF_UTF8,  8,   (const uint8_t*)ver,  0, 0};
+
+    static uint8_t buf[8192];
+    const size_t size = ps3_psf_write(buf, sizeof buf, it, n);
+    FILE* f = size ? fopen(sfo_path, "wb") : NULL;
+    const int ok = f && fwrite(buf, 1, size, f) == size;
+    if (f) fclose(f);
+    printf("[cellGame] DataCheckCreate2: PARAM.SFO (title='%s' id='%s' version='%s') %s\n",
+           title, ids, ver, ok ? "written" : "write FAILED");
+    return ok ? 0 : -1;
 }
 
 s32 cellGameDataCheckCreate2(u32 version, const char* dirName, u32 errDialog,
@@ -544,12 +597,15 @@ s32 cellGameDataCheckCreate2(u32 version, const char* dirName, u32 errDialog,
     if (version != 0 || !dir_ea || !func_opd)
         return CELL_GAME_ERROR_PARAM;
 
-    /* isNewData follows whether the game-data dir exists, as on firmware and
-     * RPCS3. Reporting existing data that is not there makes a title look for
-     * its files, miss them, and declare the data corrupt (Resistance 2). */
-    char path[CELL_GAME_PATH_MAX];
+    /* isNewData follows whether the game data has a PARAM.SFO, as in RPCS3: a
+     * folder without one (left empty by an older Setup, or by an install that
+     * never finished) is not installed data. Reporting it as existing made
+     * Resistance 2 look for its files and declare the data corrupt. */
+    char path[CELL_GAME_PATH_MAX], sfo[CELL_GAME_PATH_MAX];
     snprintf(path, sizeof path, "%s/%s", content_root(), (const char*)(vm_base + dir_ea));
-    const uint32_t is_new = dir_exists(path) ? 0u : 1u;
+    snprintf(sfo, sizeof sfo, "%s/PARAM.SFO", path);
+    char tmp[8];
+    const uint32_t is_new = sfo_read_string(sfo, "CATEGORY", tmp, sizeof tmp) == 0 ? 0u : 1u;
 
     s32 result = gamedata_stat_callback("DataCheckCreate2", version, dir_ea,
                                         func_opd, is_new);
@@ -559,6 +615,7 @@ s32 cellGameDataCheckCreate2(u32 version, const char* dirName, u32 errDialog,
         char usr[CELL_GAME_PATH_MAX];
         snprintf(usr, sizeof usr, "%s/USRDIR", path);
         ensure_dirs(usr);
+        gamedata_write_sfo(sfo, (const char*)(vm_base + dir_ea));
         printf("[cellGame] DataCheckCreate2: created game data %s\n", path);
     }
     return CELL_OK;

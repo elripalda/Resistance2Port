@@ -33,32 +33,10 @@ typedef struct {
     uint32_t       ival;
 } ps3_psf_item;
 
-/* Build a game-save PSF into out (cap bytes). Returns the size, or 0 if cap is too small. Text longer than its max
- * length is cut (utf8 keeps room for the NUL). dir is the savedata directory name. */
-static size_t ps3_psf_build(uint8_t* out, size_t cap, const char* dir, const char* title, const char* subtitle,
-                            const char* detail, uint32_t attribute, const char* list_param)
+/* Write items (already in alphabetical key order) as a PSF into out (cap bytes). Returns the size, or 0 if cap is
+ * too small. Text longer than its max length is cut (utf8 keeps room for the NUL). */
+static size_t ps3_psf_write(uint8_t* out, size_t cap, const ps3_psf_item* it, uint32_t n)
 {
-    /* ASSUMPTION: an unregistered account is 16 ASCII zeros (the wiki says "filled with zeroes"); PARAMS keeps only
-     * its first byte (always 1 in the wiki's samples) and zeros for the counters, ids and reserved area. */
-    static const uint8_t account[16] = {'0','0','0','0','0','0','0','0','0','0','0','0','0','0','0','0'};
-    uint8_t params[1024]; memset(params, 0, sizeof params); params[0] = 1;
-    uint8_t params2[12]; memset(params2, 0, sizeof params2);
-    #define S(p) ((const uint8_t*)((p) ? (p) : ""))
-    ps3_psf_item it[] = {   /* alphabetical, as in the real files */
-        {"ACCOUNT_ID",          PS3_PSF_UTF8S, 16,   account,  16,   0},
-        {"ATTRIBUTE",           PS3_PSF_INT32, 4,    NULL,     4,    attribute},
-        {"CATEGORY",            PS3_PSF_UTF8,  4,    (const uint8_t*)"SD", 0, 0},
-        {"DETAIL",              PS3_PSF_UTF8,  1024, S(detail),    0, 0},
-        {"PARAMS",              PS3_PSF_UTF8S, 1024, params,   1024, 0},
-        {"PARAMS2",             PS3_PSF_UTF8S, 12,   params2,  12,   0},
-        {"PARENTAL_LEVEL",      PS3_PSF_INT32, 4,    NULL,     4,    0},
-        {"SAVEDATA_DIRECTORY",  PS3_PSF_UTF8,  64,   S(dir),       0, 0},
-        {"SAVEDATA_LIST_PARAM", PS3_PSF_UTF8,  8,    S(list_param), 0, 0},
-        {"SUB_TITLE",           PS3_PSF_UTF8,  128,  S(subtitle),  0, 0},
-        {"TITLE",               PS3_PSF_UTF8,  128,  S(title),     0, 0},
-    };
-    #undef S
-    const uint32_t n = (uint32_t)(sizeof it / sizeof it[0]);
     uint32_t ktab = 0x14 + 16 * n, kbytes = 0, dbytes = 0;
     for (uint32_t i = 0; i < n; i++) kbytes += (uint32_t)strlen(it[i].key) + 1;
     uint32_t dtab = ktab + ((kbytes + 3) & ~3u);
@@ -89,6 +67,34 @@ static size_t ps3_psf_build(uint8_t* out, size_t cap, const char* dir, const cha
         dof += it[i].max_len;
     }
     return (size_t)dtab + dbytes;
+}
+
+/* Build a game-save PSF into out (cap bytes). Returns the size, or 0 if cap is too small. Text longer than its max
+ * length is cut (utf8 keeps room for the NUL). dir is the savedata directory name. */
+static size_t ps3_psf_build(uint8_t* out, size_t cap, const char* dir, const char* title, const char* subtitle,
+                            const char* detail, uint32_t attribute, const char* list_param)
+{
+    /* ASSUMPTION: an unregistered account is 16 ASCII zeros (the wiki says "filled with zeroes"); PARAMS keeps only
+     * its first byte (always 1 in the wiki's samples) and zeros for the counters, ids and reserved area. */
+    static const uint8_t account[16] = {'0','0','0','0','0','0','0','0','0','0','0','0','0','0','0','0'};
+    uint8_t params[1024]; memset(params, 0, sizeof params); params[0] = 1;
+    uint8_t params2[12]; memset(params2, 0, sizeof params2);
+    #define S(p) ((const uint8_t*)((p) ? (p) : ""))
+    ps3_psf_item it[] = {   /* alphabetical, as in the real files */
+        {"ACCOUNT_ID",          PS3_PSF_UTF8S, 16,   account,  16,   0},
+        {"ATTRIBUTE",           PS3_PSF_INT32, 4,    NULL,     4,    attribute},
+        {"CATEGORY",            PS3_PSF_UTF8,  4,    (const uint8_t*)"SD", 0, 0},
+        {"DETAIL",              PS3_PSF_UTF8,  1024, S(detail),    0, 0},
+        {"PARAMS",              PS3_PSF_UTF8S, 1024, params,   1024, 0},
+        {"PARAMS2",             PS3_PSF_UTF8S, 12,   params2,  12,   0},
+        {"PARENTAL_LEVEL",      PS3_PSF_INT32, 4,    NULL,     4,    0},
+        {"SAVEDATA_DIRECTORY",  PS3_PSF_UTF8,  64,   S(dir),       0, 0},
+        {"SAVEDATA_LIST_PARAM", PS3_PSF_UTF8,  8,    S(list_param), 0, 0},
+        {"SUB_TITLE",           PS3_PSF_UTF8,  128,  S(subtitle),  0, 0},
+        {"TITLE",               PS3_PSF_UTF8,  128,  S(title),     0, 0},
+    };
+    #undef S
+    return ps3_psf_write(out, cap, it, (uint32_t)(sizeof it / sizeof it[0]));
 }
 
 /* Parse a PSF. Returns 1 if buf is a PSF (the fields found are filled, the others left untouched), 0 if it is not
