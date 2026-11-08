@@ -1110,7 +1110,12 @@ extern "C" double r2_frame_period(double f1)
         return f1;
     }
 
-    /* host pacing: wait until 1/fps after the previous frame */
+    /* host pacing: a fixed 1/fps schedule. A frame that finishes early after a
+     * late one does not wait: in heavy scenes frames alternate between waiting
+     * on the RSX and running straight through, and sleeping after every quick
+     * frame threw away the time the slow one had already lost (~40 fps where
+     * the frames averaged under 1/60). The debt is capped at one frame, so a
+     * long stall never turns into a catch-up burst. */
     static uint64_t next = 0;
     const uint64_t step = 79800000ull / (uint64_t)fps;
     uint64_t now = ppu_timebase_now();
@@ -1124,8 +1129,10 @@ extern "C" double r2_frame_period(double f1)
             else if (rem_us > 150.0) SwitchToThread();
             else YieldProcessor();
         }
-        next += step;
-    } else next = now + step;   /* first frame, or running behind: no catch-up burst */
+    }
+    if (!next) next = now;
+    next += step;
+    if (next + step < now) next = now - step;
 
     { static uint64_t t0 = 0; static unsigned n = 0;
       if (!t0) t0 = now;
