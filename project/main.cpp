@@ -195,6 +195,18 @@ extern "C" unsigned cellGcmGetCurrentDisplayBufferId(void);
 #include "../ps3recomp/libs/video/rpcs3_bridge/r2rsx_bridge.h"
 
 static int s_rsx_live = 0;
+static int s_rsx_vk = 0;
+
+#if defined(PS3RECOMP_RSX_VULKAN)
+#include "../ps3recomp/libs/video/rsx_vulkan_backend.h"
+/* R2_RSX=vulkan (or native): ps3recomp's register-file draw engine driving
+ * the Vulkan backend, presenting into the null backend's window. */
+static int rsx_vk_wanted(void)
+{
+    const char* e = getenv("R2_RSX");
+    return e && (!_stricmp(e, "vulkan") || !_stricmp(e, "native"));
+}
+#endif
 
 /* location 0 = RSX local memory, 1 = main memory through the IO table. */
 static const uint8_t* rsx_live_guest_ptr(void*, uint32_t location,
@@ -213,6 +225,22 @@ static const uint8_t* rsx_live_guest_ptr(void*, uint32_t location,
 
 static int rsx_select_init(uint32_t w, uint32_t h, const char* title)
 {
+#if defined(PS3RECOMP_RSX_VULKAN)
+    if (rsx_vk_wanted()) {
+        _putenv("PS3RECOMP_VK_GUEST_PROGRAMS=1");
+        if (!getenv("PS3RECOMP_RSX_ENGINE")) _putenv("PS3RECOMP_RSX_ENGINE=dispatch");
+        if (rsx_null_backend_init(w, h, title) == 0) {
+            rsx_vulkan_backend_set_window(rsx_null_backend_get_hwnd());
+            if (rsx_vulkan_backend_init(w, h, title) == 0) {
+                s_rsx_vk = 1;
+                rsx_null_backend_suppress_present(1);
+                fprintf(stderr, "[rsx] native Vulkan renderer up\n");
+                return 0;
+            }
+        }
+        fprintf(stderr, "[rsx] native Vulkan init FAILED -- falling back to the D3D12 backend\n");
+    }
+#endif
     if (rsx_live_draw_enabled()) {
         if (rsx_null_backend_init(w, h, title) == 0 &&
             rsx_live_draw_init(rsx_null_backend_get_hwnd(), w, h, rsx_live_guest_ptr, nullptr) == 0) {
@@ -227,12 +255,15 @@ static int rsx_select_init(uint32_t w, uint32_t h, const char* title)
 }
 static void rsx_select_present(void)
 {
+#if defined(PS3RECOMP_RSX_VULKAN)
+    if (s_rsx_vk) { rsx_vulkan_backend_present(); return; }
+#endif
     if (s_rsx_live) rsx_live_draw_present(cellGcmGetCurrentDisplayBufferId());
     else rsx_backend_present();
 }
 static int rsx_select_pump(void)
 {
-    return s_rsx_live ? rsx_null_backend_pump_messages() : rsx_backend_pump();
+    return (s_rsx_live || s_rsx_vk) ? rsx_null_backend_pump_messages() : rsx_backend_pump();
 }
 #  undef  rsx_backend_init
 #  undef  rsx_backend_present
