@@ -1200,6 +1200,20 @@ index 7cab474..da22f2f 100644
  	u32 mrt_buffers_count = 0;
  
  	bool two_sided_lighting = false;
+diff --git a/rpcs3/Emu/RSX/RSXOffload.cpp b/rpcs3/Emu/RSX/RSXOffload.cpp
+index 493fc8c..caac87e 100644
+--- a/rpcs3/Emu/RSX/RSXOffload.cpp
++++ b/rpcs3/Emu/RSX/RSXOffload.cpp
+@@ -79,7 +79,8 @@ namespace rsx
+ 				if (m_enqueued_count.load() == m_processed_count.load())
+ 				{
+ 					m_processed_count.notify_all();
+-					std::this_thread::yield();
++					// Port: sleep until push() signals instead of spinning on yield (was ~1 core of idle spin)
++					thread_ctrl::wait_on(m_work_queue.get_wait_atomic(), 0u, 1000);
+ 				}
+ 			}
+ 
 diff --git a/rpcs3/Emu/RSX/VK/VKDraw.cpp b/rpcs3/Emu/RSX/VK/VKDraw.cpp
 index 2c736de..8bfa6a0 100644
 --- a/rpcs3/Emu/RSX/VK/VKDraw.cpp
