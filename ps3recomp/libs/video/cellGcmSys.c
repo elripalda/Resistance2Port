@@ -1389,6 +1389,148 @@ static void nv3089_blit(void)
                out_w, out_h, f, src, in_pitch, dst, dst_pitch, out_x, out_y); } }
 }
 
+/* NV0039 "memory to memory format": the linear buffer copy libgcm's
+ * cellGcmSetTransferData / cellGcmSetTransferImage emit. Registers (RPCS3
+ * gcm_enums.h NV0039_*): 0x0184/0x0188 source/destination DMA, 0x030C/0x0310
+ * offsets, 0x0314/0x0318 signed pitches, 0x031C line length (bytes), 0x0320
+ * line count, 0x0324 format (input stride [7:0], output stride [15:8]) and
+ * 0x0328 BUFFER_NOTIFY, the trigger. Semantics follow RPCS3's
+ * nv0039::buffer_notify, including the byte-stride gather and the
+ * overlapping-range double copy. */
+static struct {
+    u32 in_dma, out_dma, in_off, out_off, len, count, fmt;
+    s32 in_pitch, out_pitch;
+} s_nv0039;
+
+static void nv0039_copy(void)
+{
+    const u32 len = s_nv0039.len, count = s_nv0039.count;
+    const u32 in_fmt = s_nv0039.fmt & 0xFFu, out_fmt = (s_nv0039.fmt >> 8) & 0xFFu;
+    if (!len || !count || !in_fmt || in_fmt > 4 || !out_fmt || out_fmt > 4) return;
+    const s32 in_pitch = s_nv0039.in_pitch, out_pitch = s_nv0039.out_pitch;
+    const int src_local = (s_nv0039.in_dma != 0xFEED0001u);
+    const int dst_local = (s_nv0039.out_dma != 0xFEED0001u);
+    const u32 src = cellGcmResolveLocated(src_local, s_nv0039.in_off);
+    const u32 dst = cellGcmResolveLocated(dst_local, s_nv0039.out_off);
+    if (!src || !dst || src == 0xFFFFFFFFu || dst == 0xFFFFFFFFu) return;
+    const u32 in_w = len * in_fmt, out_w = len * out_fmt;
+    const u32 read_len = (u32)(in_pitch * (s32)(count - 1)) + in_w;
+    const u32 write_len = (u32)(out_pitch * (s32)(count - 1)) + out_w;
+    if (rsx_draw_engine_enabled())
+        rsx_draw_engine_range_read(src_local ? RSX_LOCATION_LOCAL : RSX_LOCATION_MAIN,
+                                   s_nv0039.in_off, read_len);
+    extern u8* vm_base;
+    u8* d = vm_base + dst;
+    const u8* s = vm_base + src;
+    if (in_fmt > 1 || out_fmt > 1) {
+        for (u32 r = 0; r < count; r++)
+            for (u32 c = 0; c < len; c++)
+                d[(s64)r * out_pitch + (s64)c * out_fmt] = s[(s64)r * in_pitch + (s64)c * in_fmt];
+    } else {
+        const int overlap = src_local == dst_local &&
+            (u64)src < (u64)dst + write_len && (u64)dst < (u64)src + read_len;
+        const int block = (u32)in_pitch == in_w && (u32)out_pitch == out_w;
+        if (block) memmove(d, s, read_len);
+        else if (!overlap)
+            for (u32 r = 0; r < count; r++)
+                memcpy(d + (s64)r * out_pitch, s + (s64)r * in_pitch, len);
+        else {
+            u8* tmp = (u8*)malloc((size_t)len * count);
+            if (!tmp) return;
+            for (u32 r = 0; r < count; r++) memcpy(tmp + (size_t)r * len, s + (s64)r * in_pitch, len);
+            for (u32 r = 0; r < count; r++) memcpy(d + (s64)r * out_pitch, tmp + (size_t)r * len, len);
+            free(tmp);
+        }
+    }
+    if (rsx_draw_engine_enabled())
+        rsx_draw_engine_range_wrote(dst_local ? RSX_LOCATION_LOCAL : RSX_LOCATION_MAIN,
+                                    s_nv0039.out_off, write_len);
+    { static int _n = 0; static int cap = -1;
+      if (cap < 0) { const char* e = getenv("NV0039_DBG"); cap = e ? atoi(e) : 0; }
+      if (cap && _n < cap) { _n++;
+        printf("[NV0039] %ux%u fmt=0x%X src=0x%08X(pitch %d) -> dst=0x%08X(pitch %d)%c",
+               len, count, s_nv0039.fmt, src, in_pitch, dst, out_pitch, 10); } }
+}
+
+static void nv0039_method(u32 method, u32 data)
+{
+    switch (method) {
+    case 0x0184: s_nv0039.in_dma    = data; return;
+    case 0x0188: s_nv0039.out_dma   = data; return;
+    case 0x030C: s_nv0039.in_off    = data; return;
+    case 0x0310: s_nv0039.out_off   = data; return;
+    case 0x0314: s_nv0039.in_pitch  = (s32)data; return;
+    case 0x0318: s_nv0039.out_pitch = (s32)data; return;
+    case 0x031C: s_nv0039.len       = data; return;
+    case 0x0320: s_nv0039.count     = data; return;
+    case 0x0324: s_nv0039.fmt       = data; return;
+    case 0x0328: nv0039_copy(); return;
+    }
+}
+
+/* Which object subchannel 1 drives. libgcm binds NV0039 there (RPCS3 maps
+ * subchannel 1 to NV0039 outright), but some titles bind NV4097 to it
+ * (Twisted Metal, Yakuza Dead Souls) and SET_OBJECT is not always seen. The
+ * NV0039 methods alias NV4097 blend/colour-mask state (0x030C..0x0328), so
+ * routing them as 3D corrupts it. A SET_OBJECT matching subchannel 0's
+ * handle decides 3D, a different one NV0039. Without one, any method outside
+ * NV0039's set makes the subchannel 3D for good, replaying the NV0039-range
+ * words held meanwhile; BUFFER_NOTIFY (0x0328) makes it NV0039 for good. */
+static u32 s_subch_handle[8];
+static int s_sub1_class;                  /* 0 unknown, 1 NV4097, 2 NV0039 */
+static u32 s_sub1_held[12], s_sub1_held_mask;
+
+static int nv0039_method_index(u32 m)
+{
+    if (m == 0x0184) return 0;
+    if (m == 0x0188) return 1;
+    if (m >= 0x030C && m <= 0x0328) return 2 + (int)((m - 0x030C) >> 2);
+    return -1;
+}
+
+static void gcm_note_set_object(u32 subch, u32 handle)
+{
+    if (subch >= 8) return;
+    s_subch_handle[subch] = handle;
+    if (s_subch_handle[0] && s_subch_handle[1])
+        s_sub1_class = (s_subch_handle[1] == s_subch_handle[0]) ? 1 : 2;
+}
+
+/* 1 when the method on subchannel 1 is NV0039's, 0 when it is NV4097's. */
+static int gcm_sub1_is_nv0039(rsx_state* st, u32 m)
+{
+    if (s_sub1_class == 1) return 0;
+    if (s_sub1_class == 2) return 1;
+    const int idx = nv0039_method_index(m);
+    if (idx < 0) {
+        s_sub1_class = 1;
+        fprintf(stderr, "[gcm] subchannel 1 carries NV4097 (method 0x%04X)%c", m, 10);
+        for (int i = 0; i < 12; i++)
+            if (s_sub1_held_mask & (1u << i)) {
+                const u32 hm = i == 0 ? 0x0184u : i == 1 ? 0x0188u : 0x030Cu + (u32)(i - 2) * 4u;
+                rsx_process_method(st, hm, s_sub1_held[i]);
+                if (rsx_draw_engine_enabled()) rsx_draw_engine_method(hm, s_sub1_held[i]);
+            }
+        s_sub1_held_mask = 0;
+        return 0;
+    }
+    if (m == 0x0328) {
+        s_sub1_class = 2;
+        s_sub1_held_mask = 0;
+        fprintf(stderr, "[gcm] subchannel 1 carries NV0039%c", 10);
+    }
+    return 1;
+}
+
+static void gcm_sub1_nv0039(u32 m, u32 data)
+{
+    if (s_sub1_class == 0) {
+        const int idx = nv0039_method_index(m);
+        if (idx >= 0) { s_sub1_held[idx] = data; s_sub1_held_mask |= 1u << idx; }
+    }
+    nv0039_method(m, data);
+}
+
 static void gcm_2d_method(u32 subch, u32 method, u32 data)
 {
     /* GCM2D_TRACE=1: histogram of (subchannel, method) actually seen. The
@@ -2495,7 +2637,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
               extern volatile int g_port_trace_left;
               extern volatile long g_fifo_mhist_on;
               if (g_fifo_mhist_on) fifo_mhist_note(subch, method, type, count);
-              if (fast && count && (subch == 0 || (subch == 1 && s1q)) && g_port_trace_left <= 0) {
+              if (fast && count && (subch == 0 || (subch == 1 && s1q && s_sub1_class == 1)) && g_port_trace_left <= 0) {
                   const u32 io0 = s_fifo_getoff + 4, io1 = s_fifo_getoff + count * 4;
                   const u32 dea = gcm_io2ea(io0);
                   if (dea && (io0 >> 20) == (io1 >> 20)) {
@@ -2658,11 +2800,19 @@ static void gcm_rsx_process_fifo_unlocked(void)
 
                 /* And into the platform-neutral register-file draw engine,
                  * which is the macOS path under PS3RECOMP_RSX_ENGINE=dispatch.
-                 * It wants the raw method with its subchannel bits for the
-                 * same reason the live engine does, and masks them itself. */
+                 * Only NV4097 methods (and the driver methods, which it
+                 * decodes with their subchannel bits) go there: the 2D
+                 * objects' registers (NV0039, NV3062, NV309E, NV3089) alias
+                 * NV4097 alpha/blend/colour-mask state once the subchannel
+                 * is masked off. */
+                const u32 mfull = (subch << 13) | m;
+                if (m == 0) gcm_note_set_object(subch, vm_read32(dea));
+                const int is3d = subch == 0 ||
+                    (subch == 1 && !s1_2d && !gcm_sub1_is_nv0039(&s_state, m));
                 { static int eng = -1;
                   if (eng < 0) eng = rsx_draw_engine_enabled();
-                  if (eng) rsx_draw_engine_method((subch << 13) | m, vm_read32(dea)); }
+                  if (eng && (is3d || mfull >= 0xE000u))
+                      rsx_draw_engine_method(mfull, vm_read32(dea)); }
 
                 /* RSX_LIVE_FEED_DBG=1: what the FIFO actually carries. Counted
                  * for any run, live engine or not, so the method stream and the
@@ -2684,14 +2834,15 @@ static void gcm_rsx_process_fifo_unlocked(void)
                  * FIFO word; the standard 11-bit extraction (w & 0x1FFC)
                  * truncates them.  Reconstruct the full address the same way
                  * the draw-engine call above does. */
-                { const u32 mfull = (subch << 13) | m;
-                if (mfull == 0xEB00u || mfull == 0xEB04u) {
+                { if (mfull == 0xEB00u || mfull == 0xEB04u) {
                     cellGcmQueueUserCommand(vm_read32(dea));
                 } else if (mfull == 0xE920u || mfull == 0xE924u) {
                     cellGcmSetFlipCommand(vm_read32(dea) & 7u);
-                } else if (subch == 0 || (subch == 1 && !s1_2d)) {
+                } else if (is3d) {
                     rsx_process_method(&s_state, m, vm_read32(dea));
                     if (m == 0x50u || m == 0x1A8u || m == 0x1800u) gcm_method_post(m, vm_read32(dea));
+                } else if (subch == 1 && !s1_2d) {
+                    gcm_sub1_nv0039(m, vm_read32(dea));
                 } else
                     gcm_2d_method(subch, m, vm_read32(dea));
                 }

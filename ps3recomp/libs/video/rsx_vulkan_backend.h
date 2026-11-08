@@ -49,6 +49,11 @@
  *   PS3RECOMP_RSX_ENGINE=dispatch|vtable
  *                             pick the path explicitly (the engine's own
  *                             switch, shared with the Metal backend).
+ *   PS3RECOMP_VK_SYNC=1       engine path: submit and wait after every
+ *                             operation (the old fully synchronous model),
+ *                             to bisect frame-recording regressions.
+ *   RSX_VSYNC=1               FIFO presentation; otherwise MAILBOX when
+ *                             available, else IMMEDIATE, else FIFO.
  */
 
 #ifndef PS3RECOMP_RSX_VULKAN_BACKEND_H
@@ -64,6 +69,10 @@ extern "C" {
  * the RSX backend. `title` is only logged (no window at V0).
  * Returns 0 on success, -1 on any failure (reason printed to stderr). */
 int  rsx_vulkan_backend_init(u32 width, u32 height, const char* title);
+
+/* Windows: the host's own window (HWND) to present into. Call before init;
+ * with one set the backend presents to it, without one it stays headless. */
+void rsx_vulkan_backend_set_window(void* hwnd);
 
 /* Unregister and destroy every Vulkan object, then unload the library. */
 void rsx_vulkan_backend_shutdown(void);

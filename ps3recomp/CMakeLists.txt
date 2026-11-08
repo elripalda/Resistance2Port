@@ -47,11 +47,18 @@ list(FILTER HLE_SOURCES EXCLUDE REGEX "/tests/")
 # The Vulkan RSX backend is opt-in while it grows (stage V0: clear + present).
 # It loads libvulkan at run time, so building needs only the Vulkan headers --
 # no target-architecture libvulkan, which keeps cross-compiling simple.
-option(PS3RECOMP_RSX_VULKAN "Build the Vulkan RSX backend (Linux)" OFF)
+option(PS3RECOMP_RSX_VULKAN "Build the Vulkan RSX backend (Linux, Windows)" OFF)
 list(FILTER HLE_SOURCES EXCLUDE REGEX "rsx_vulkan_backend\\.c$")
 if(PS3RECOMP_RSX_VULKAN)
-    if(WIN32 OR APPLE)
-        message(FATAL_ERROR "PS3RECOMP_RSX_VULKAN is Linux-only for now")
+    if(APPLE)
+        message(FATAL_ERROR "PS3RECOMP_RSX_VULKAN is not available on Apple platforms")
+    endif()
+    # Windows: the Vulkan headers vendored with RPCS3's 3rdparty tree.
+    if(WIN32 AND NOT PS3RECOMP_VULKAN_INCLUDE_DIR AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/rpcs3/3rdparty/Vulkan-Headers/include/vulkan/vulkan.h")
+        set(PS3RECOMP_VULKAN_INCLUDE_DIR
+            "${CMAKE_CURRENT_SOURCE_DIR}/third_party/rpcs3/3rdparty/Vulkan-Headers/include"
+            CACHE PATH "directory containing vulkan/vulkan.h")
     endif()
     find_path(PS3RECOMP_VULKAN_INCLUDE_DIR vulkan/vulkan.h)
     if(NOT PS3RECOMP_VULKAN_INCLUDE_DIR)
@@ -291,7 +298,17 @@ endif()
 # libs/video/rsx_shader_spirv.cpp is a stub and the Vulkan backend stays on
 # its fixed-function path.
 if(PS3RECOMP_RSX_VULKAN)
-    if(glslang_FOUND AND TARGET glslang::glslang AND TARGET glslang::SPIRV)
+    # Windows: glslang comes from RPCS3's 3rdparty tree, built with HLSL input
+    # into the port's build_rpcs3 and linked by the port itself; here it only
+    # needs the headers.
+    if(WIN32 AND PS3RECOMP_GLSLANG_INCLUDE_DIR)
+        set_source_files_properties(
+            "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/rsx_shader_spirv.cpp"
+            PROPERTIES COMPILE_DEFINITIONS PS3RECOMP_HAVE_SPIRV_TRANSLATION=1)
+        target_include_directories(ps3recomp_runtime PRIVATE ${PS3RECOMP_GLSLANG_INCLUDE_DIR})
+        set(PS3RECOMP_SPIRV_TRANSLATION ON)
+        message(STATUS "  Vulkan:       guest programs available (glslang headers in ${PS3RECOMP_GLSLANG_INCLUDE_DIR})")
+    elseif(glslang_FOUND AND TARGET glslang::glslang AND TARGET glslang::SPIRV)
         set_source_files_properties(
             "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/rsx_shader_spirv.cpp"
             PROPERTIES COMPILE_DEFINITIONS PS3RECOMP_HAVE_SPIRV_TRANSLATION=1)

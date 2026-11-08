@@ -254,9 +254,11 @@ extern "C" int r2rsx_enabled(void)
 {
 	if (s_enabled < 0)
 	{
-		// RPCS3/Vulkan is the default renderer; R2_RSX=d3d12 (or 0) selects the old D3D12 backend.
+		// RPCS3/Vulkan is the default renderer; R2_RSX=d3d12 (or 0) selects the old D3D12 backend,
+		// R2_RSX=vulkan the native Vulkan renderer (ps3recomp's draw engine).
 		const char* e = std::getenv("R2_RSX");
-		s_enabled = !(e && (!_stricmp(e, "d3d12") || !std::strcmp(e, "0")));
+		s_enabled = !(e && (!_stricmp(e, "d3d12") || !_stricmp(e, "vulkan") || !_stricmp(e, "native") ||
+		                    !std::strcmp(e, "0")));
 	}
 	return s_enabled;
 }

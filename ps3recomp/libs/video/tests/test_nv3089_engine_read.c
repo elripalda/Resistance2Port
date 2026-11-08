@@ -43,6 +43,8 @@ void rsx_draw_engine_method(u32 method, u32 arg) { (void)method; (void)arg; }
 void rsx_draw_engine_note_flip(u32 buffer_id) { (void)buffer_id; }
 /* guest_read is defined below: it plays the engine's part. */
 void rsx_draw_engine_guest_wrote(u32 l, u32 o, u32 p, u32 w, u32 h) { (void)l; (void)o; (void)p; (void)w; (void)h; }
+void rsx_draw_engine_range_read(u32 l, u32 o, u32 n) { (void)l; (void)o; (void)n; }
+void rsx_draw_engine_range_wrote(u32 l, u32 o, u32 n) { (void)l; (void)o; (void)n; }
 int  rsx_live_draw_enabled(void) { return 0; }
 void rsx_live_draw_method(u32 method, u32 arg) { (void)method; (void)arg; }
 int  rsx_live_draw_blit(u32 a, u32 b, u32 c, u32 d, u32 e, u32 f, u32 w, u32 h)

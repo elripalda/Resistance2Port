@@ -66,6 +66,10 @@ typedef struct rsx_be_sampler_desc {
     u8  min_linear, mag_linear, mip_linear, mip_present;
     u8  wrap_s, wrap_t, wrap_r;
     float min_lod, max_lod;
+    /* SET_TEXTURE_FILTER [12:0], signed 4.8 fixed point (RPCS3
+     * fragment_texture::bias), and SET_TEXTURE_BORDER_COLOR, raw A8R8G8B8. */
+    float lod_bias;
+    u32 border_color;
 } rsx_be_sampler_desc;
 
 /* The NV4097 render state a pipeline is built from: rsx_live_draw.c's
@@ -88,6 +92,13 @@ typedef struct rsx_be_render_state {
     u32 depth_bounds_test;          /* SET_DEPTH_BOUNDS_TEST_ENABLE */
     u32 s_func, s_func_mask, s_write_mask, s_fail, s_zfail, s_zpass;
     u32 bs_func, bs_fail, bs_zfail, bs_zpass;
+    /* SET_LOGIC_OP_ENABLE / SET_LOGIC_OP (GL enums 0x1500..0x150F). An
+     * enabled logic op replaces blending (RPCS3 VKGSRender.cpp). */
+    u32 logic_op_enable, logic_op;
+    /* SET_BLEND_COLOR (A8R8G8B8, or R16G16 of an FP16 target with
+     * SET_BLEND_COLOR2 holding B16A16). Dynamic state: not in the
+     * pipeline key. */
+    u32 blend_color, blend_color2;
 } rsx_be_render_state;
 
 /* submit_and_wait reasons, for a backend that wants to log or count them. */
@@ -201,6 +212,9 @@ typedef struct rsx_draw_backend {
      * (rsx_be_render_state.depth_bounds_test); a backend that leaves this
      * NULL draws as if the test were off. */
     void (*set_depth_bounds)(void* user, float min, float max);
+    /* Optional: SET_BLEND_COLOR decoded to floats (RGBA) for the CONSTANT_*
+     * blend factors, called before every draw. */
+    void (*set_blend_constants)(void* user, const float rgba[4]);
     /* One draw. `indices` is NULL for a non-indexed one. Everything the
      * hardware has and the host does not -- quads, quad strips, fans,
      * polygons -- has already been expanded into a triangle list by the time
@@ -244,6 +258,25 @@ typedef struct rsx_draw_backend {
                               u32 depth, u32 mips, u32 remap, u32 rsx_fmt);
     void (*texture_upload_3d)(void* user, u32 texture, u32 z, u32 mip,
                               u32 w, u32 h, const void* src, u32 row_bytes);
+
+    /* Optional. A fresh, immutable texture holding the rectangle (x, y, w, h)
+     * of a colour target, in the target's storage format: what a texture unit
+     * sees when it names a surface's address and pitch but only part of its
+     * extent (a 1152x640 scene inside a 1280x704 target, an AA sample grid).
+     * Ordered like color_snapshot; the engine owns and releases the handle.
+     * NULL or 0: the engine binds the whole target, as before. */
+    u32 (*color_region_snapshot)(void* user, u32 surface, u32 x, u32 y,
+                                 u32 w, u32 h);
+
+    /* Optional. Scaled, linearly filtered copy of rectangle (sx, sy, sw, sh)
+     * of colour target `src` onto (dx, dy, dw, dh) of colour target `dst`,
+     * both of one storage format, ordered after all preceding writes and
+     * before the next draw. The engine uses it when a guest rebinds a surface
+     * address with a different antialias mode: RPCS3 then makes a new surface
+     * that inherits the old one's contents resolved (or spread) to the new
+     * sample grid. NULL: the new surface starts from guest memory. */
+    void (*color_target_blit)(void* user, u32 src, u32 sx, u32 sy, u32 sw, u32 sh,
+                              u32 dst, u32 dx, u32 dy, u32 dw, u32 dh);
 } rsx_draw_backend;
 
 /* ---- the engine --------------------------------------------------------- */
@@ -306,6 +339,11 @@ void rsx_draw_engine_note_flip(u32 buffer_id);
  * out with the same pitch take part; anything else is left alone. */
 void rsx_draw_engine_guest_read(u32 location, u32 offset, u32 pitch, u32 w, u32 h);
 void rsx_draw_engine_guest_wrote(u32 location, u32 offset, u32 pitch, u32 w, u32 h);
+/* Address-range forms for linear transfers (NV0039): store every rendered
+ * surface overlapping the source range to guest memory before it is read,
+ * and reload the A8R8G8B8 surface rows a destination range overwrote. */
+void rsx_draw_engine_range_read(u32 location, u32 offset, u32 length);
+void rsx_draw_engine_range_wrote(u32 location, u32 offset, u32 length);
 
 /* --- test hooks ---------------------------------------------------------- */
 

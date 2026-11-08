@@ -98,6 +98,11 @@ typedef struct {
     rsx_be_format fmt;
     u32 handle;
     u32 feedback;          /* last immutable own-target copy, engine-owned */
+    u32 region;            /* last sub-rectangle copy (color_region_snapshot) */
+    u32 region_w, region_h;
+    u64 region_serial;     /* color_serial the region copy was taken at */
+    u32 cfmt;              /* SURFACE_FORMAT colour field it was last drawn as */
+    u32 aa_sx, aa_sy;      /* sample grid per pixel this surface is held at   */
     u64 color_serial;       /* g.write_serial of the last colour write, or 0 */
     int guest_dirty;        /* rendered since guest memory last got a copy   */
 } eng_surface;
@@ -256,6 +261,16 @@ static u64 eng_fnv1a(const void* data, u32 n, u64 hash)
 
 /* ---- render state -------------------------------------------------------- */
 
+static float eng_half(u32 h)
+{
+    const u32 s = (h >> 15) & 1u, e = (h >> 10) & 0x1Fu, m = h & 0x3FFu;
+    float v;
+    if (e == 0)       v = (float)m / 16777216.0f;           /* m * 2^-24 */
+    else if (e == 31) v = m ? 0.0f : 65504.0f;
+    else              v = (float)(1024u + m) * (float)(1u << e) / 33554432.0f; /* 2^(e-15)*(1+m/1024) */
+    return s ? -v : v;
+}
+
 void rsx_draw_engine_decode_render_state(const rsx_dispatch* rsx,
                                          rsx_be_render_state* rs)
 {
@@ -299,6 +314,10 @@ void rsx_draw_engine_decode_render_state(const rsx_dispatch* rsx,
     rs->bs_zfail     = rsx_dsp_reg(rsx, M_BACK_STENCIL_OP_ZFAIL);
     rs->bs_zpass     = rsx_dsp_reg(rsx, M_BACK_STENCIL_OP_ZPASS);
     rs->depth_bounds_test = rsx_dsp_reg(rsx, M_DEPTH_BOUNDS_ENABLE) & 1;
+    rs->logic_op_enable = rsx_dsp_reg(rsx, 0x0374) & 1;
+    rs->logic_op        = rs->logic_op_enable ? rsx_dsp_reg(rsx, 0x0378) : 0;
+    rs->blend_color     = rsx_dsp_reg(rsx, 0x031C);
+    rs->blend_color2    = rsx_dsp_reg(rsx, 0x037C);
 }
 
 u64 rsx_draw_engine_hash_render_state(const rsx_be_render_state* rs, u64 hash)
@@ -341,6 +360,8 @@ u64 rsx_draw_engine_hash_render_state(const rsx_be_render_state* rs, u64 hash)
     ENG_HASH_FIELD(bs_zfail);
     ENG_HASH_FIELD(bs_zpass);
     ENG_HASH_FIELD(depth_bounds_test);
+    ENG_HASH_FIELD(logic_op_enable);
+    ENG_HASH_FIELD(logic_op);
 #undef ENG_HASH_FIELD
     return hash;
 }
@@ -556,23 +577,93 @@ static const void* eng_surface_seed(u32 location, u32 offset, u32 w, u32 h,
  * runs a 640x360 pass at the same address and pitch and copies the full
  * 1280x720 out for its SPU anti-aliasing; recreating the target at 640x360
  * lost the scene and left that quarter of the frame black. */
+/* The colour surface at an address whose contents are newest -- with one
+ * surface per antialias mode there can be two. A tie goes to a current
+ * attachment (`targets`, may be NULL), which was just brought up to date. */
+static u32 eng_surface_newest(u32 location, u32 offset, const u32* targets, u32 n_targets)
+{
+    u32 best = ENG_INVALID;
+    int best_bound = 0;
+    for (u32 i = 0; i < g.n_surfaces; i++) {
+        const eng_surface* s = &g.surfaces[i];
+        if (!s->handle || s->location != location || s->offset != offset) continue;
+        int bound = 0;
+        for (u32 k = 0; k < n_targets; k++) if (targets[k] == i) bound = 1;
+        if (best != ENG_INVALID) {
+            const u64 bs = g.surfaces[best].color_serial;
+            if (s->color_serial < bs || (s->color_serial == bs && (best_bound || !bound)))
+                continue;
+        }
+        best = i;
+        best_bound = bound;
+    }
+    return best;
+}
+
+/* Bring surface `dst` up to date from `src`, the same address under another
+ * antialias mode, when src holds the newer contents: the overlapping pixels
+ * are scaled from src's sample grid onto dst's, a 2x1 grid resolving to one
+ * sample per pixel by the linear filter. */
+static void eng_surface_inherit(u32 dst, u32 src)
+{
+    if (src == ENG_INVALID || src == dst || !g.be->color_target_blit) return;
+    eng_surface* d = &g.surfaces[dst];
+    const eng_surface* s = &g.surfaces[src];
+    if (!s->handle || !d->handle || s->fmt != d->fmt ||
+        s->color_serial <= d->color_serial)
+        return;
+    u32 pw = s->w / s->aa_sx, ph = s->h / s->aa_sy;
+    if (d->w / d->aa_sx < pw) pw = d->w / d->aa_sx;
+    if (d->h / d->aa_sy < ph) ph = d->h / d->aa_sy;
+    if (!pw || !ph) return;
+    g.be->color_target_blit(g.be->user, s->handle, 0, 0, pw * s->aa_sx, ph * s->aa_sy,
+                            d->handle, 0, 0, pw * d->aa_sx, ph * d->aa_sy);
+    d->color_serial = s->color_serial;
+    d->guest_dirty = s->guest_dirty;
+    if (d->region) { g.be->texture_release(g.be->user, d->region); d->region = 0; }
+}
+
 static u32 eng_surface_get(u32 location, u32 offset, u32 want_w, u32 want_h,
-                          rsx_be_format want_fmt, u32 pitch)
+                          rsx_be_format want_fmt, u32 pitch, u32 aa_sx, u32 aa_sy)
 {
     if (!want_w) want_w = g.width;
     if (!want_h) want_h = g.height;
+    if (!aa_sx) aa_sx = 1;
+    if (!aa_sy) aa_sy = 1;
 
-    u32 slot = ENG_MAX_SURFACES;
-    for (u32 i = 0; i < g.n_surfaces; i++)
-        if (g.surfaces[i].location == location && g.surfaces[i].offset == offset) {
-            const eng_surface* s = &g.surfaces[i];
-            if (s->fmt == want_fmt &&
-                ((s->w == want_w && s->h == want_h) ||
-                 (pitch && s->pitch == pitch && s->w >= want_w && s->h >= want_h)))
-                return i;
-            slot = i;
-            break;
+    /* One surface per antialias mode at an address, as RPCS3's surface store
+     * keeps: R2 renders its scene 2x AA into 0x880000, then binds the same
+     * address without AA for the composites and the upscale, which read the
+     * resolved image. The sibling written last is what a rebind inherits. */
+    u32 slot = ENG_MAX_SURFACES, sibling = ENG_INVALID;
+    for (u32 i = 0; i < g.n_surfaces; i++) {
+        const eng_surface* s = &g.surfaces[i];
+        if (!s->handle || s->location != location || s->offset != offset) continue;
+        if (s->aa_sx != aa_sx || s->aa_sy != aa_sy) {
+            if (s->color_serial &&
+                (sibling == ENG_INVALID ||
+                 s->color_serial > g.surfaces[sibling].color_serial))
+                sibling = i;
+            continue;
         }
+        if (slot != ENG_MAX_SURFACES) continue;
+        if (s->fmt == want_fmt &&
+            ((s->w == want_w && s->h == want_h) ||
+             (pitch && s->pitch == pitch && s->w >= want_w && s->h >= want_h))) {
+            if (sibling == ENG_INVALID)
+                for (u32 k = i + 1; k < g.n_surfaces; k++) {
+                    const eng_surface* o = &g.surfaces[k];
+                    if (o->handle && o->location == location && o->offset == offset &&
+                        (o->aa_sx != aa_sx || o->aa_sy != aa_sy) && o->color_serial &&
+                        (sibling == ENG_INVALID ||
+                         o->color_serial > g.surfaces[sibling].color_serial))
+                        sibling = k;
+                }
+            eng_surface_inherit(i, sibling);
+            return i;
+        }
+        slot = i;
+    }
 
     /* Never destroy a usable render target because one malformed command
      * decoded a guest pointer as clip dimensions. */
@@ -590,8 +681,9 @@ static u32 eng_surface_get(u32 location, u32 offset, u32 want_w, u32 want_h,
     }
 
     u32 seed_row = 0;
-    const void* seed = eng_surface_seed(location, offset, want_w, want_h,
-                                        want_fmt, &seed_row);
+    const void* seed = (sibling == ENG_INVALID)
+        ? eng_surface_seed(location, offset, want_w, want_h, want_fmt, &seed_row)
+        : NULL;
     const u32 handle = g.be->color_target_create(g.be->user, want_fmt,
                                                  want_w, want_h, seed, seed_row);
     if (!handle)
@@ -599,17 +691,20 @@ static u32 eng_surface_get(u32 location, u32 offset, u32 want_w, u32 want_h,
 
     eng_surface* s = &g.surfaces[slot];
     if (s->feedback) { g.be->texture_release(g.be->user, s->feedback); s->feedback = 0; }
+    if (s->region) { g.be->texture_release(g.be->user, s->region); s->region = 0; }
     if (s->handle) g.be->color_target_release(g.be->user, s->handle);
     s->location = location; s->offset = offset;
     s->w = want_w; s->h = want_h; s->fmt = want_fmt;
+    s->aa_sx = aa_sx; s->aa_sy = aa_sy;
     s->handle = handle;
     s->color_serial = 0;
     s->guest_dirty = 0;
     if (slot == g.n_surfaces) g.n_surfaces++;
     { static u32 logs = 0; if (PS3_LOG_FIRST(logs, 16))
-        fprintf(stderr, "[rsx engine] surface %u:0x%08X %ux%u fmt %d%s\n",
-                location, offset, want_w, want_h, (int)want_fmt,
+        fprintf(stderr, "[rsx engine] surface %u:0x%08X %ux%u fmt %d aa %ux%u%s\n",
+                location, offset, want_w, want_h, (int)want_fmt, aa_sx, aa_sy,
                 seed ? " (seeded from guest memory)" : ""); }
+    eng_surface_inherit(slot, sibling);
     return slot;
 }
 
@@ -628,9 +723,11 @@ static u32 eng_current_target_set(u32 slots[RSX_BE_MAX_COLOR_TARGETS])
     const u32 sel = (sf.color_target == CELL_GCM_SURFACE_TARGET_1) ? 1u : 0u;
     const rsx_be_format fmt = eng_surface_format(sf.color_format);
     const u32 first = eng_surface_get(sf.color_location[sel], sf.color_offset[sel],
-                                      sf.clip_w, sf.clip_h, fmt, sf.color_pitch[sel]);
+                                      sf.clip_w, sf.clip_h, fmt, sf.color_pitch[sel],
+                                      sf.aa_sx, sf.aa_sy);
     if (first == ENG_INVALID) return 0;
     g.surfaces[first].pitch = sf.color_pitch[sel];
+    g.surfaces[first].cfmt = sf.color_format & 0x1Fu;
     slots[0] = first;
     u32 n = 1;
 
@@ -645,9 +742,10 @@ static u32 eng_current_target_set(u32 slots[RSX_BE_MAX_COLOR_TARGETS])
         const u32 slot = eng_surface_get(sf.color_location[i + 1],
                                          sf.color_offset[i + 1],
                                          g.surfaces[first].w, g.surfaces[first].h, fmt,
-                                         sf.color_pitch[i + 1]);
+                                         sf.color_pitch[i + 1], sf.aa_sx, sf.aa_sy);
         if (slot == ENG_INVALID) break;
         g.surfaces[slot].pitch = sf.color_pitch[i + 1];
+        g.surfaces[slot].cfmt = sf.color_format & 0x1Fu;
         /* A set naming one buffer twice would attach the same target twice,
          * which no host API allows. */
         int seen = 0;
@@ -691,6 +789,8 @@ static u32 eng_surface_at(u32 location, u32 offset, u32 pitch, u32* xb, u32* y)
         const u32 d = offset - s->offset;
         if (d / pitch >= s->h || d % pitch >= s->w * bpp) continue;
         if (best != ENG_INVALID && g.surfaces[best].offset > s->offset) continue;
+        if (best != ENG_INVALID && g.surfaces[best].offset == s->offset &&
+            g.surfaces[best].color_serial > s->color_serial) continue;
         best = i;
         *xb = d % pitch;
         *y = d / pitch;
@@ -839,6 +939,20 @@ static u32 eng_current_surface(void)
 }
 
 /* ---- per-zeta depth ------------------------------------------------------ */
+
+/* RPCS3's framebuffer layout check (RSXGraphEngine.cpp): in a pitch-linear
+ * surface a zeta pitch of 64 bytes or less that cannot hold one written row
+ * drops the depth buffer. */
+static int eng_zeta_dropped(const rsx_dsp_surface* sf)
+{
+    if (sf->raster_type == 2u || sf->zeta_pitch > 64u) return 0;
+    const u32 bpp = (sf->depth_format == 1u) ? 2u : 4u;
+    u32 limit = sf->aa_sx ? sf->clip_w / sf->aa_sx : sf->clip_w;
+    const u32 h = rsx_dsp_reg(&g.rsx, M_SCISSOR_HORIZONTAL);
+    if ((h >> 16) && (h & 0xFFFFu) + (h >> 16) < limit)
+        limit = (h & 0xFFFFu) + (h >> 16);
+    return sf->zeta_pitch < bpp * limit;
+}
 
 /* One depth target per guest zeta address. Sharing a single resource across a
  * title's shadow, scene and post passes cross-contaminates later depth tests;
@@ -1306,6 +1420,54 @@ static int eng_zdepth_to_guest(u32 slot)
     return 1;
 }
 
+static int eng_ranges_overlap(u32 a, u32 alen, u32 b, u32 blen)
+{
+    return (u64)a < (u64)b + blen && (u64)b < (u64)a + alen;
+}
+
+/* A transfer (NV0039, a CPU-side reader) is about to read [offset, +length):
+ * every rendered colour or depth surface that overlaps it is stored to guest
+ * memory first, like RPCS3's read_barrier on the transfer's source range. */
+void rsx_draw_engine_range_read(u32 location, u32 offset, u32 length)
+{
+    if (!g.ready || !length) return;
+    for (u32 i = 0; i < g.n_surfaces; i++) {
+        const eng_surface* s = &g.surfaces[i];
+        if (!s->handle || !s->guest_dirty || s->location != location) continue;
+        if (eng_ranges_overlap(offset, length, s->offset, s->pitch * s->h))
+            eng_surface_to_guest(i);
+    }
+    for (u32 i = 0; i < g.n_zdepths; i++) {
+        const eng_zdepth* z = &g.zdepths[i];
+        if (!z->handle || !z->guest_dirty || z->location != location) continue;
+        const u32 h = z->used_h < z->h ? z->used_h : z->h;
+        if (eng_ranges_overlap(offset, length, z->offset, z->pitch * h))
+            eng_zdepth_to_guest(i);
+    }
+}
+
+/* A transfer wrote [offset, +length) of guest memory: the rows of every
+ * A8R8G8B8 colour surface it touched are reloaded from guest memory, like
+ * RPCS3's write_barrier on the destination range. */
+void rsx_draw_engine_range_wrote(u32 location, u32 offset, u32 length)
+{
+    if (!g.ready || !length) return;
+    for (u32 i = 0; i < g.n_surfaces; i++) {
+        const eng_surface* s = &g.surfaces[i];
+        if (!s->handle || s->location != location || !s->pitch) continue;
+        /* An antialiased surface holds samples, not the guest's pixel rows. */
+        if (s->aa_sx > 1 || s->aa_sy > 1) continue;
+        const u32 span = s->pitch * s->h;
+        if (!eng_ranges_overlap(offset, length, s->offset, span)) continue;
+        const u32 lo = offset > s->offset ? offset - s->offset : 0;
+        const u64 end = (u64)offset + length - s->offset;
+        const u32 hi = end < span ? (u32)end : span;
+        const u32 r0 = lo / s->pitch, r1 = (hi - 1u) / s->pitch + 1u;
+        const u32 w = s->pitch / 4u < s->w ? s->pitch / 4u : s->w;
+        rsx_draw_engine_guest_wrote(location, s->offset + r0 * s->pitch, s->pitch, w, r1 - r0);
+    }
+}
+
 /* A depth write or clear through the current zeta, recorded with what the
  * guest-memory copy needs to lay it out. */
 static void eng_zdepth_wrote(u32 slot, const rsx_dsp_surface* sf)
@@ -1331,10 +1493,10 @@ static void eng_surfaces_wrote(const u32* targets, u32 n_targets)
 /* SET_TEXTURE_FILTER's min field is [18:16] (1 NEAREST, 2 LINEAR, then 3..6,
  * the four combinations of a nearest/linear minification with a
  * nearest/linear mip filter) and mag [26:24]; SET_TEXTURE_CONTROL0 carries
- * max LOD at [18:7] and min LOD at [30:19], both 4.8 fixed point. RSX's LOD
- * bias, SET_TEXTURE_FILTER [12:0], is not applied: the reference engine
- * leaves it at zero too. */
-static void eng_decode_sampler(u32 filter, u32 wrap, u32 control0,
+ * max LOD at [18:7] and min LOD at [30:19], both 4.8 fixed point, and the
+ * LOD bias is SET_TEXTURE_FILTER [12:0], signed 4.8 (RPCS3
+ * fragment_texture::bias, clamped to [-16, 16)). */
+static void eng_decode_sampler(u32 filter, u32 wrap, u32 control0, u32 border,
                                rsx_be_sampler_desc* out)
 {
     const u32 minf = (filter >> 16) & 7u;
@@ -1350,6 +1512,13 @@ static void eng_decode_sampler(u32 filter, u32 wrap, u32 control0,
     out->max_lod = out->mip_present ? (float)((control0 >> 7) & 0xFFFu) / 256.0f
                                     : 0.0f;
     if (out->max_lod < out->min_lod) out->max_lod = out->min_lod;
+    {
+        const int b13 = (int)(filter & 0x1FFFu);
+        float bias = (float)((b13 ^ 0x1000) - 0x1000) / 256.0f;
+        if (bias > 16.0f - 1.0f / 256.0f) bias = 16.0f - 1.0f / 256.0f;
+        out->lod_bias = bias;
+    }
+    out->border_color = border;
 }
 
 /* ---- pipelines ----------------------------------------------------------- */
@@ -2071,6 +2240,91 @@ static u32 eng_color_feedback_failure(u32 unit, const eng_surface* s,
     return ENG_INVALID;
 }
 
+/* A texture naming a surface's address and pitch but a smaller extent reads
+ * the top-left (w, h) of its sample grid, as RPCS3's framebuffer sampling
+ * copies that subregion (texture_cache_helpers.h, process_framebuffer_
+ * resource_fast). Binding the whole target instead stretches the image: R2
+ * renders 1152x640 into a 1280x704 target and upscales it from there. Returns
+ * the cached copy for the surface's current contents, or 0 to bind as before. */
+static u32 eng_surface_region(eng_surface* s, const rsx_dsp_texture* t)
+{
+    if (!g.be->color_region_snapshot || t->dimension != 2 || t->cubemap ||
+        !t->width || !t->height)
+        return 0;
+    /* An antialiased surface is held at sample resolution. A texture no
+     * larger than its pixel extent reads the resolved pixels, which RPCS3
+     * serves from the resolve image; its rectangle here is in samples. A
+     * wider one is a raw read of the sample grid. */
+    u32 rw = t->width, rh = t->height;
+    if (s->aa_sx > 1 || s->aa_sy > 1) {
+        if (rw * s->aa_sx <= s->w && rh * s->aa_sy <= s->h) {
+            rw *= s->aa_sx;
+            rh *= s->aa_sy;
+        }
+    }
+    if (rw > s->w || rh > s->h || (rw == s->w && rh == s->h))
+        return 0;
+    if (t->pitch && s->pitch && t->pitch != s->pitch) return 0;
+    {
+        const u32 base = t->format & 0x9fu;
+        const int same = (s->fmt == RSX_BE_FMT_R8G8B8A8 && base == 0x85u) ||
+                         (s->fmt == RSX_BE_FMT_R16G16B16A16F && base == 0x9au) ||
+                         (s->fmt == RSX_BE_FMT_R32G32B32A32F && base == 0x9bu) ||
+                         (s->fmt == RSX_BE_FMT_R32F && base == 0x9cu);
+        if (!same) return 0;
+    }
+    if (s->region && s->region_w == rw && s->region_h == rh &&
+        s->region_serial == s->color_serial)
+        return s->region;
+    const u32 copy = g.be->color_region_snapshot(g.be->user, s->handle, 0, 0, rw, rh);
+    if (!copy) return 0;
+    if (s->region) g.be->texture_release(g.be->user, s->region);
+    s->region = copy;
+    s->region_w = rw;
+    s->region_h = rh;
+    s->region_serial = s->color_serial;
+    return copy;
+}
+
+/* The engine keeps B8, G8B8 and the X8 colour formats as RGBA8 targets holding
+ * the shader's own output channels, where RSX stores B8 as the B output only,
+ * G8B8 as (B, G), and X8 with a constant alpha (RPCS3's ROP channel remap,
+ * RSXFragmentPrologue.glsl remap_ROP_output, and its surface format table in
+ * VKGSRender.cpp). Reading such a target as the matching texture format is
+ * rewritten here as an A8R8G8B8 read through a crossbar that picks those
+ * channels, so the backend's view needs no format of its own. */
+static void eng_surface_crossbar(const eng_surface* s, u32 format, u32 remap,
+                                 u32* out_format, u32* out_remap)
+{
+    *out_format = format;
+    *out_remap = remap & 0xFFFFu;
+    const u32 base = format & 0x9Fu;
+    u32 c1 = remap & 0xFFFFu;
+    if (!c1) c1 = 0xAAE4u;
+    int kind = 0;
+    if (s->cfmt == 0x09u && base == 0x81u) kind = 1;
+    else if (s->cfmt == 0x0Au && base == 0x8Bu) kind = 2;
+    else if ((s->cfmt == 0x04u || s->cfmt == 0x0Eu) && base == 0x85u) kind = 3;
+    else if ((s->cfmt == 0x05u || s->cfmt == 0x0Fu) && base == 0x85u) kind = 4;
+    if (!kind) return;
+    u32 out = 0;
+    for (u32 i = 0; i < 4; i++) {
+        u32 src = (c1 >> (i * 2)) & 3u;
+        u32 op = (c1 >> (8 + i * 2)) & 3u;
+        if (op >= 2u) {
+            switch (kind) {
+            case 1: if (src == 0u) op = 1u; else src = 3u; break;
+            case 2: src = (src == 0u || src == 2u) ? 2u : 3u; break;
+            case 3: if (src == 0u) op = 0u; break;
+            case 4: if (src == 0u) op = 1u; break;
+            }
+        }
+        out |= (src << (i * 2)) | (op << (8 + i * 2));
+    }
+    *out_format = (format & ~0x9Fu) | 0x85u;
+    *out_remap = out;
+}
+
 static u32 sink_bind_textures(const u32* target_slots, u32 n_targets,
                               u32 current_zslot, u32 tex_used,
                               u32 textures[RSX_BE_MAX_TEXTURES],
@@ -2086,20 +2340,18 @@ static u32 sink_bind_textures(const u32* target_slots, u32 n_targets,
          * aliased surface a store to guest memory, for nothing. */
         if (!t.enabled || !((tex_used >> u) & 1u)) continue;
         mask |= 1u << u;
-        eng_decode_sampler(t.filter, t.wrap, t.control0, &samplers[u]);
+        eng_decode_sampler(t.filter, t.wrap, t.control0, t.border_color, &samplers[u]);
 
         int sampled = -1, own = 0, surface_at = -1;
-        for (u32 i = 0; i < g.n_surfaces; i++) {
-            if (!g.surfaces[i].handle || g.surfaces[i].location != t.location ||
-                g.surfaces[i].offset != t.offset)
-                continue;
-            surface_at = (int)i;
-            /* A current attachment requires an ordered immutable copy; it
-             * cannot be sampled directly while the host pass writes it. */
-            for (u32 k = 0; k < n_targets; k++) if (target_slots[k] == i) own = 1;
-            if (own) break;
-            sampled = (int)i;
-            break;
+        {
+            const u32 i = eng_surface_newest(t.location, t.offset, target_slots, n_targets);
+            if (i != ENG_INVALID) {
+                surface_at = (int)i;
+                /* A current attachment requires an ordered immutable copy; it
+                 * cannot be sampled directly while the host pass writes it. */
+                for (u32 k = 0; k < n_targets; k++) if (target_slots[k] == i) own = 1;
+                if (!own) sampled = (int)i;
+            }
         }
         const u32 base_fmt = t.format & RSX_TEX_FMT_BASE_MASK & ~(u32)RSX_TEX_FMT_UNNORM;
         /* The depth at this address, when it was written after any colour
@@ -2132,6 +2384,19 @@ static u32 sink_bind_textures(const u32* target_slots, u32 n_targets,
             eng_surface* s = &g.surfaces[surface_at];
             rsx_dsp_surface sf;
             rsx_dsp_get_surface(&g.rsx, &sf);
+            /* A subregion of the target being drawn: an ordered copy of just
+             * that rectangle is as immutable as a full snapshot. */
+            u32 xfmt, xremap;
+            eng_surface_crossbar(s, t.format, t.remap, &xfmt, &xremap);
+            rsx_dsp_texture tx = t;
+            tx.format = xfmt;
+            const u32 sub = eng_surface_region(s, &tx);
+            if (sub) {
+                const u32 view = g.be->surface_view
+                    ? g.be->surface_view(g.be->user, sub, xremap, xfmt) : 0;
+                textures[u] = view ? view : sub;
+                continue;
+            }
             if (!eng_color_feedback_compatible(s, &t, &sf))
                 return eng_color_feedback_failure(u, s, &t);
             u32 k = 0;
@@ -2145,9 +2410,9 @@ static u32 sink_bind_textures(const u32* target_slots, u32 n_targets,
             }
             if (g.be->surface_view) {
                 textures[u] = g.be->surface_view(g.be->user, feedback[k],
-                                               t.remap & 0xffffu, t.format);
+                                               xremap, xfmt);
                 if (!textures[u]) return eng_color_feedback_failure(u, s, &t);
-            } else if ((t.remap & 0xffffu) == 0xaae4u) {
+            } else if (xremap == 0xaae4u) {
                 textures[u] = feedback[k];
             } else {
                 return eng_color_feedback_failure(u, s, &t);
@@ -2165,11 +2430,16 @@ static u32 sink_bind_textures(const u32* target_slots, u32 n_targets,
             continue;
         }
         if (sampled >= 0) {
+            u32 xfmt, xremap;
+            eng_surface_crossbar(&g.surfaces[sampled], t.format, t.remap, &xfmt, &xremap);
+            rsx_dsp_texture tx = t;
+            tx.format = xfmt;
+            const u32 sub = eng_surface_region(&g.surfaces[sampled], &tx);
+            const u32 src = sub ? sub : g.surfaces[sampled].handle;
             const u32 view = g.be->surface_view
-                ? g.be->surface_view(g.be->user, g.surfaces[sampled].handle,
-                                     t.remap & 0xFFFFu, t.format)
+                ? g.be->surface_view(g.be->user, src, xremap, xfmt)
                 : 0;
-            textures[u] = view ? view : g.surfaces[sampled].handle;
+            textures[u] = view ? view : src;
             continue;
         }
         if (base_fmt == RSX_TEX_FMT_DEPTH24_D8) {
@@ -2199,7 +2469,7 @@ static u32 sink_bind_vertex_textures(
         if (!((vtex_mask >> u) & 1u)) continue;
         rsx_dsp_vertex_texture vt;
         rsx_dsp_get_vertex_texture(&g.rsx, u, &vt);
-        eng_decode_sampler(vt.filter, vt.wrap, vt.control0, &samplers[u]);
+        eng_decode_sampler(vt.filter, vt.wrap, vt.control0, vt.border_color, &samplers[u]);
         /* A vertex unit has no crossbar, so its remap is the identity. */
         textures[u] = eng_texture_slot(vt.location, vt.offset, vt.format,
                                        vt.width, vt.height, vt.mipmaps,
@@ -2483,13 +2753,12 @@ static void pd_note(const u32* targets, u32 n_targets, u32 zslot,
          * of its last write: the newer one is what the binding sampled. */
         char src[48] = "G";
         size_t sl = 0;
-        for (u32 i = 0; i < g.n_surfaces; i++)
-            if (g.surfaces[i].handle && g.surfaces[i].location == t.location &&
-                g.surfaces[i].offset == t.offset) {
+        {
+            const u32 i = eng_surface_newest(t.location, t.offset, NULL, 0);
+            if (i != ENG_INVALID)
                 sl = (size_t)snprintf(src, sizeof src, "S%u@%llu", i,
                                       (unsigned long long)g.surfaces[i].color_serial);
-                break;
-            }
+        }
         for (u32 i = 0; i < g.n_zdepths; i++)
             if (g.zdepths[i].location == t.location && g.zdepths[i].offset == t.offset) {
                 snprintf(src + sl, sizeof src - sl, "%sZ%u@%llu", sl ? "," : "", i,
@@ -2582,8 +2851,19 @@ static void sink_end(void* user, const rsx_dispatch* r)
     rsx_dsp_viewport vp;
     rsx_dsp_get_surface(&g.rsx, &sf);
     rsx_dsp_get_viewport(&g.rsx, &vp);
-    const u32 zslot = eng_zdepth_get(sf.zeta_location, sf.zeta_offset,
-                                     sf.clip_w, sf.clip_h);
+    const u32 zslot0 = eng_zdepth_get(sf.zeta_location, sf.zeta_offset,
+                                      sf.clip_w, sf.clip_h);
+    /* A zeta whose pitch cannot hold one row of the write is not bound: RPCS3
+     * drops it (RSXGraphEngine.cpp, "Misconfigured surface could not fit a
+     * depth buffer"), so the draw runs with no depth or stencil test. R2's
+     * low-resolution particle passes set zeta pitch 0 with the test left on. */
+    const int z_dropped = eng_zeta_dropped(&sf);
+    const u32 zslot = z_dropped ? ENG_INVALID : zslot0;
+    if (z_dropped) {
+        rs.depth_test = 0;
+        rs.depth_write = 0;
+        rs.stencil_enable = 0;
+    }
 
     /* A guest program pair that will not translate has no fallback: the draw
      * is dropped, as the reference engine drops it. Substituting the built-in
@@ -2720,6 +3000,23 @@ static void sink_end(void* user, const rsx_dispatch* r)
         memcpy(&fmax, &hi, sizeof fmax);
         g.be->set_depth_bounds(g.be->user, fmin, fmax);
     }
+    /* RPCS3 decode_constant_blend_color: FP16 targets read four halves
+     * (R,G in BLEND_COLOR, B,A in BLEND_COLOR2), the rest A8R8G8B8. */
+    if (g.be->set_blend_constants) {
+        const u32 c = rsx_dsp_reg(&g.rsx, 0x031C);
+        float k[4];
+        if (sf.color_format == RSX_SURFACE_FMT_F_W16Z16Y16X16) {
+            const u32 c2 = rsx_dsp_reg(&g.rsx, 0x037C);
+            k[0] = eng_half(c & 0xFFFFu);  k[1] = eng_half(c >> 16);
+            k[2] = eng_half(c2 & 0xFFFFu); k[3] = eng_half(c2 >> 16);
+        } else {
+            k[0] = (float)((c >> 16) & 0xFFu) / 255.0f;
+            k[1] = (float)((c >> 8) & 0xFFu) / 255.0f;
+            k[2] = (float)(c & 0xFFu) / 255.0f;
+            k[3] = (float)(c >> 24) / 255.0f;
+        }
+        g.be->set_blend_constants(g.be->user, k);
+    }
 
     const u32 uploaded = indexed ? dc.n_verts : n_draw;
     g.be->draw(g.be->user, topology, dc.verts, uploaded, layout.stride,
@@ -2770,6 +3067,7 @@ static void sink_clear(void* user, const rsx_dispatch* r, u32 mask)
     if (mask & (RSX_CLEAR_DEPTH | RSX_CLEAR_STENCIL)) {
         rsx_dsp_surface sf;
         rsx_dsp_get_surface(&g.rsx, &sf);
+        if (eng_zeta_dropped(&sf)) return;
         const u32 zslot = eng_zdepth_get(sf.zeta_location, sf.zeta_offset,
                                          sf.clip_w, sf.clip_h);
         if (zslot == ENG_INVALID) return;
@@ -2808,10 +3106,8 @@ static u32 eng_present_surface(u32 buffer_id)
 {
     if (buffer_id < 8 && g.display_buffers[buffer_id].valid) {
         const eng_display_buffer* d = &g.display_buffers[buffer_id];
-        for (u32 i = 0; i < g.n_surfaces; i++)
-            if (g.surfaces[i].handle && g.surfaces[i].location == d->location &&
-                g.surfaces[i].offset == d->offset)
-                return i;
+        const u32 i = eng_surface_newest(d->location, d->offset, NULL, 0);
+        if (i != ENG_INVALID) return i;
     }
     return eng_current_surface();
 }
@@ -2919,6 +3215,7 @@ void rsx_draw_engine_shutdown(void)
         if (g.pipelines[i].handle) g.be->pipeline_release(g.be->user, g.pipelines[i].handle);
     for (u32 i = 0; i < g.n_surfaces; i++) {
         if (g.surfaces[i].feedback) g.be->texture_release(g.be->user, g.surfaces[i].feedback);
+        if (g.surfaces[i].region) g.be->texture_release(g.be->user, g.surfaces[i].region);
         if (g.surfaces[i].handle) g.be->color_target_release(g.be->user, g.surfaces[i].handle);
     }
     for (u32 i = 0; i < g.n_zdepths; i++)
