@@ -87,6 +87,521 @@
      "        ctx->fpr[12] = ctx->fpr[1];"
     ]
    }
+  ],
+  "func_005ABFEC": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_005ABFEC(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_spin_relax(void);   /* R2: guest spin-wait gives up the core on low-core CPUs (stubs.cpp) */",
+     "void func_005ABFEC(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 59,
+    "ctx": "        ctx->gpr[31] = R_31 = R_31 | R_31;",
+    "rm": [
+     "        goto loc_005ABFF8;"
+    ],
+    "add": [
+     "        r2_spin_relax();",
+     "        goto loc_005ABFF8;"
+    ]
+   }
+  ],
+  "func_005AC0FC": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_005AC0FC(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_spin_relax(void);   /* R2: guest spin-wait gives up the core on low-core CPUs (stubs.cpp) */",
+     "void func_005AC0FC(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 299,
+    "ctx": "        ctx->gpr[31] = R_31 = R_31 | R_31;",
+    "rm": [
+     "        goto loc_005AC424;"
+    ],
+    "add": [
+     "        r2_spin_relax();",
+     "        goto loc_005AC424;"
+    ]
+   }
+  ],
+  "func_005AC984": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_005AC984(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_spin_relax(void);   /* R2: guest spin-wait gives up the core on low-core CPUs (stubs.cpp) */",
+     "void func_005AC984(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 266,
+    "ctx": "        ctx->gpr[31] = R_31 = R_31 | R_31;",
+    "rm": [
+     "        goto loc_005ACA48;"
+    ],
+    "add": [
+     "        r2_spin_relax();",
+     "        goto loc_005ACA48;"
+    ]
+   },
+   {
+    "at": 300,
+    "ctx": "        ctx->gpr[31] = R_31 = R_31 | R_31;",
+    "rm": [
+     "        goto loc_005ACAC0;"
+    ],
+    "add": [
+     "        r2_spin_relax();",
+     "        goto loc_005ACAC0;"
+    ]
+   }
+  ],
+  "func_005ACDBC": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_005ACDBC(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_spin_relax(void);   /* R2: guest spin-wait gives up the core on low-core CPUs (stubs.cpp) */",
+     "void func_005ACDBC(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 65,
+    "ctx": "        ctx->gpr[31] = R_31 = R_31 | R_31;",
+    "rm": [
+     "        goto loc_005ACDE0;"
+    ],
+    "add": [
+     "        r2_spin_relax();",
+     "        goto loc_005ACDE0;"
+    ]
+   }
+  ],
+  "func_005ACED4": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_005ACED4(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_spin_relax(void);   /* R2: guest spin-wait gives up the core on low-core CPUs (stubs.cpp) */",
+     "void func_005ACED4(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 77,
+    "ctx": "        ctx->gpr[31] = R_31 = R_31 | R_31;",
+    "rm": [
+     "        goto loc_005ACF24;"
+    ],
+    "add": [
+     "        r2_spin_relax();",
+     "        goto loc_005ACF24;"
+    ]
+   }
+  ],
+  "func_005AD038": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_005AD038(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_spin_relax(void);   /* R2: guest spin-wait gives up the core on low-core CPUs (stubs.cpp) */",
+     "void func_005AD038(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 77,
+    "ctx": "        ctx->gpr[31] = R_31 = R_31 | R_31;",
+    "rm": [
+     "        goto loc_005AD088;"
+    ],
+    "add": [
+     "        r2_spin_relax();",
+     "        goto loc_005AD088;"
+    ]
+   }
+  ],
+  "func_005AD19C": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_005AD19C(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_spin_relax(void);   /* R2: guest spin-wait gives up the core on low-core CPUs (stubs.cpp) */",
+     "void func_005AD19C(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 77,
+    "ctx": "        ctx->gpr[31] = R_31 = R_31 | R_31;",
+    "rm": [
+     "        goto loc_005AD1EC;"
+    ],
+    "add": [
+     "        r2_spin_relax();",
+     "        goto loc_005AD1EC;"
+    ]
+   }
+  ],
+  "func_005AD308": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_005AD308(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_spin_relax(void);   /* R2: guest spin-wait gives up the core on low-core CPUs (stubs.cpp) */",
+     "void func_005AD308(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 81,
+    "ctx": "        ctx->gpr[31] = R_31 = R_31 | R_31;",
+    "rm": [
+     "        goto loc_005AD334;"
+    ],
+    "add": [
+     "        r2_spin_relax();",
+     "        goto loc_005AD334;"
+    ]
+   }
+  ],
+  "func_005AD414": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_005AD414(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_spin_relax(void);   /* R2: guest spin-wait gives up the core on low-core CPUs (stubs.cpp) */",
+     "void func_005AD414(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 108,
+    "ctx": "        ctx->gpr[31] = R_31 = R_31 | R_31;",
+    "rm": [
+     "        goto loc_005AD494;"
+    ],
+    "add": [
+     "        r2_spin_relax();",
+     "        goto loc_005AD494;"
+    ]
+   }
+  ],
+  "func_005AD62C": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_005AD62C(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_spin_relax(void);   /* R2: guest spin-wait gives up the core on low-core CPUs (stubs.cpp) */",
+     "void func_005AD62C(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 172,
+    "ctx": "        ctx->gpr[31] = R_31 = R_31 | R_31;",
+    "rm": [
+     "        goto loc_005AD7D8;"
+    ],
+    "add": [
+     "        r2_spin_relax();",
+     "        goto loc_005AD7D8;"
+    ]
+   }
+  ],
+  "func_005AD8EC": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_005AD8EC(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_spin_relax(void);   /* R2: guest spin-wait gives up the core on low-core CPUs (stubs.cpp) */",
+     "void func_005AD8EC(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 175,
+    "ctx": "        ctx->gpr[31] = R_31 = R_31 | R_31;",
+    "rm": [
+     "        goto loc_005ADAA4;"
+    ],
+    "add": [
+     "        r2_spin_relax();",
+     "        goto loc_005ADAA4;"
+    ]
+   }
+  ],
+  "func_005ADBB8": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_005ADBB8(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_spin_relax(void);   /* R2: guest spin-wait gives up the core on low-core CPUs (stubs.cpp) */",
+     "void func_005ADBB8(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 128,
+    "ctx": "        ctx->gpr[31] = R_31 = R_31 | R_31;",
+    "rm": [
+     "        goto loc_005ADCB4;"
+    ],
+    "add": [
+     "        r2_spin_relax();",
+     "        goto loc_005ADCB4;"
+    ]
+   }
+  ],
+  "func_005ADDCC": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_005ADDCC(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_spin_relax(void);   /* R2: guest spin-wait gives up the core on low-core CPUs (stubs.cpp) */",
+     "void func_005ADDCC(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 165,
+    "ctx": "        ctx->gpr[31] = R_31 = R_31 | R_31;",
+    "rm": [
+     "        goto loc_005ADF5C;"
+    ],
+    "add": [
+     "        r2_spin_relax();",
+     "        goto loc_005ADF5C;"
+    ]
+   }
+  ],
+  "func_005AE070": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_005AE070(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_spin_relax(void);   /* R2: guest spin-wait gives up the core on low-core CPUs (stubs.cpp) */",
+     "void func_005AE070(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 147,
+    "ctx": "        ctx->gpr[31] = R_31 = R_31 | R_31;",
+    "rm": [
+     "        goto loc_005AE190;"
+    ],
+    "add": [
+     "        r2_spin_relax();",
+     "        goto loc_005AE190;"
+    ]
+   }
+  ],
+  "func_005AE2BC": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_005AE2BC(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_spin_relax(void);   /* R2: guest spin-wait gives up the core on low-core CPUs (stubs.cpp) */",
+     "void func_005AE2BC(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 174,
+    "ctx": "        ctx->gpr[31] = R_31 = R_31 | R_31;",
+    "rm": [
+     "        goto loc_005AE454;"
+    ],
+    "add": [
+     "        r2_spin_relax();",
+     "        goto loc_005AE454;"
+    ]
+   }
+  ],
+  "func_005AE578": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_005AE578(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_spin_relax(void);   /* R2: guest spin-wait gives up the core on low-core CPUs (stubs.cpp) */",
+     "void func_005AE578(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 183,
+    "ctx": "        ctx->gpr[31] = R_31 = R_31 | R_31;",
+    "rm": [
+     "        goto loc_005AE730;"
+    ],
+    "add": [
+     "        r2_spin_relax();",
+     "        goto loc_005AE730;"
+    ]
+   }
+  ],
+  "func_005AE854": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_005AE854(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_spin_relax(void);   /* R2: guest spin-wait gives up the core on low-core CPUs (stubs.cpp) */",
+     "void func_005AE854(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 185,
+    "ctx": "        ctx->gpr[31] = R_31 = R_31 | R_31;",
+    "rm": [
+     "        goto loc_005AEA1C;"
+    ],
+    "add": [
+     "        r2_spin_relax();",
+     "        goto loc_005AEA1C;"
+    ]
+   }
+  ],
+  "func_005AEB3C": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_005AEB3C(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_spin_relax(void);   /* R2: guest spin-wait gives up the core on low-core CPUs (stubs.cpp) */",
+     "void func_005AEB3C(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 183,
+    "ctx": "        ctx->gpr[31] = R_31 = R_31 | R_31;",
+    "rm": [
+     "        goto loc_005AECF4;"
+    ],
+    "add": [
+     "        r2_spin_relax();",
+     "        goto loc_005AECF4;"
+    ]
+   }
+  ],
+  "func_005AEE18": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_005AEE18(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_spin_relax(void);   /* R2: guest spin-wait gives up the core on low-core CPUs (stubs.cpp) */",
+     "void func_005AEE18(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 146,
+    "ctx": "        ctx->gpr[31] = R_31 = R_31 | R_31;",
+    "rm": [
+     "        goto loc_005AEF3C;"
+    ],
+    "add": [
+     "        r2_spin_relax();",
+     "        goto loc_005AEF3C;"
+    ]
+   }
+  ],
+  "func_005AF064": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_005AF064(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_spin_relax(void);   /* R2: guest spin-wait gives up the core on low-core CPUs (stubs.cpp) */",
+     "void func_005AF064(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 224,
+    "ctx": "        ctx->gpr[31] = R_31 = R_31 | R_31;",
+    "rm": [
+     "        goto loc_005AF2AC;"
+    ],
+    "add": [
+     "        r2_spin_relax();",
+     "        goto loc_005AF2AC;"
+    ]
+   }
+  ],
+  "func_005AF3D8": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_005AF3D8(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_spin_relax(void);   /* R2: guest spin-wait gives up the core on low-core CPUs (stubs.cpp) */",
+     "void func_005AF3D8(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 179,
+    "ctx": "        ctx->gpr[31] = R_31 = R_31 | R_31;",
+    "rm": [
+     "        goto loc_005AF594;"
+    ],
+    "add": [
+     "        r2_spin_relax();",
+     "        goto loc_005AF594;"
+    ]
+   }
   ]
  },
  "preamble": [],

@@ -43,6 +43,7 @@ Keyboard and mouse are supported out of the box (WASD, mouse look, Mouse1 fire, 
 - **Anti-aliasing → NVIDIA DLSS** uses DLSS on GeForce RTX cards and falls back to FSR 3.1 on other GPUs. The DLSS SDK is downloaded by Setup into `tools\dlss` (if that fails, the port still builds without it).
 - **Upscaling** (with FSR or DLSS on): Native (DLAA), Quality, Balanced or Performance. The default is DLSS Performance at a 4K render resolution, which is then downscaled to your screen: sharper than native at about the cost of native. Menus and HUD stay at full resolution.
 - Moving objects (like rotating weapon pickups) are masked for DLSS so they don't leave ghost copies.
+- **Low-end PCs:** the launcher's **Recommended for this PC** button picks settings for your CPU and GPU. Tuned for a 4-core CPU, a GTX 1050-class GPU and 8 GB of RAM; on 4 cores the first level holds 60 fps. On CPUs with fewer than 8 threads the port stops raising thread priorities and pinning threads to cores, and its busy-wait loops give the CPU to other threads. If a 4-core PC still stutters, use 30 fps. Advanced: `PS3_PRIO_BOOST=0/1` forces priority boosts off or on; `PORT_MAIN_CPU=<n>` pins the main thread to CPU n.
 
 ## Status
 
