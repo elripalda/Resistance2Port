@@ -31,6 +31,17 @@ sys_fs_fd_info  g_sys_fs_fds[SYS_FS_FD_MAX];
 sys_fs_dir_info g_sys_fs_dirs[SYS_FS_DIR_MAX];
 char            g_sys_fs_root[512] = ".";
 
+/* PC port: the opening logo movie is open (slot + 1, 0 = none); cellPad.c
+ * presses Start/Cross while it is, to skip it (R2_SKIP_INTRO). */
+volatile int    g_port_intro_movie = 0;
+
+/* PC port: push every open file's buffered writes to disk (quit path). */
+void sys_fs_flush_all(void)
+{
+    for (int i = 0; i < SYS_FS_FD_MAX; i++)
+        if (g_sys_fs_fds[i].active && g_sys_fs_fds[i].fp) fflush(g_sys_fs_fds[i].fp);
+}
+
 static void write_be32(uint32_t addr, uint32_t val)
 {
     uint32_t* p = (uint32_t*)vm_to_host(addr);
@@ -93,7 +104,16 @@ static void fs_normalize_sep(char* p) {
  * only weak reference to it: under COFF each one emits its own fallback. */
 extern __attribute__((weak)) const char* cellGame_get_hdd_title_id(void);
 
+static void ps3_vfs_ps3game_fallback_impl(char* path, size_t cap);
+/* Port hook (project/r2_mods.cpp, R2_MODS): may replace the resolved host path
+ * with a file from the mods folder. Runs after every translation. */
+void (*volatile g_vfs_override_hook)(char* path, size_t cap) = NULL;
 void ps3_vfs_ps3game_fallback(char* path, size_t cap)
+{
+    ps3_vfs_ps3game_fallback_impl(path, cap);
+    if (g_vfs_override_hook && path && *path) g_vfs_override_hook(path, cap);
+}
+static void ps3_vfs_ps3game_fallback_impl(char* path, size_t cap)
 {
     struct stat st;
     if (!path || !*path || stat(path, &st) == 0)
@@ -473,6 +493,8 @@ int64_t sys_fs_open(ppu_context* ctx)
     f->flags  = flags;
     strncpy(f->path, host_path, sizeof(f->path) - 1);
     f->path[sizeof(f->path) - 1] = '\0';
+    if (strstr(host_path, "c00_insom_fmv"))
+        g_port_intro_movie = slot + 1;
 
     /* FD is slot + 3 (reserve 0=stdin, 1=stdout, 2=stderr) */
     int32_t fd = slot + 3;
@@ -631,6 +653,7 @@ int64_t sys_fs_close(ppu_context* ctx)
         f->fp = NULL;
     }
     f->active = 0;
+    if (g_port_intro_movie == slot + 1) g_port_intro_movie = 0;
 
     return CELL_OK;
 }

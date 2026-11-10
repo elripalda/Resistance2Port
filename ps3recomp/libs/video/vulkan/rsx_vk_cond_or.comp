@@ -1,0 +1,13 @@
+#version 450
+// FP7: OR of up to 62 occlusion counts into the conditional-render predicate.
+// Block (256 bytes, a dynamic storage offset): v[0] count, v[1] result,
+// v[2..] the host query results copied by vkCmdCopyQueryPoolResults.
+layout(local_size_x = 1) in;
+layout(std430, set = 0, binding = 0) buffer Block { uint v[64]; };
+void main()
+{
+    uint r = 0u;
+    uint n = min(v[0], 62u);
+    for (uint i = 0u; i < n; i++) r |= v[2u + i];
+    v[1] = r;
+}

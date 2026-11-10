@@ -87,6 +87,10 @@ uint8_t* vm_base = nullptr;
 uint8_t* vm_sudo_base = nullptr;
 /* RSX page-protection fault handler: guest address, 1 = write. Returns 1 if handled. */
 int (*g_vm_access_violation_hook)(uint32_t guest_addr, int is_write) = nullptr;
+/* Unclaimed protection fault on a guarded page: the RSX page-guard registry
+ * re-applies (or drops) the page's protection itself (rsx_page_guard_reconcile;
+ * set by the engine). Returns 1 when the access can be retried. */
+int (*g_vm_guard_reconcile_hook)(uint32_t guest_addr, int is_write) = nullptr;
 extern uint32_t ppu_vm_size;                  /* ppu_loader.cpp: the OOB guard */
 extern uint32_t ppu_hle_inject_base;          /* cellGcmSys.c (v163 boot check) */
 
@@ -102,10 +106,21 @@ uint64_t ppu_guest_call(uint32_t, uint64_t, uint64_t, uint64_t, uint64_t,
 /* The GCM half of the frame clock. */
 void     cellGcmTickVBlank(void);
 void     cellGcmTickFlip(void);
+int      cellGcm_flip_pace_poll(long long now_us, long long period_us);
+int      cellGcm_vblank_thread_start(long long vblank_us, long long frame_limit_us);
+int      cellGcm_vblank_thread_running(void);
+double   r2_fps_target(void);                 /* stubs.cpp: 0 = uncapped */
+void     r2_patches_apply(void);              /* r2_patches.cpp */
+double   r2_display_refresh_hz(void);
 int      cellGcm_take_flip_pending(void);
 void     cellGcm_rsx_process_fifo(void);      /* drain get -> put */
 unsigned cellGcm_flip_request_count(void);
 }
+
+/* CPU detection, PORT_CPU_PROFILE and thread placement (runs first in main). */
+#include "cpu_profile.inc"
+#include "r2_crash.inc"
+#include "r2_autoconfig.h"
 
 /* ---------------------------------------------------------------------------
  * RSX present backend
@@ -199,6 +214,7 @@ static int s_rsx_vk = 0;
 
 #if defined(PS3RECOMP_RSX_VULKAN)
 #include "../ps3recomp/libs/video/rsx_vulkan_backend.h"
+extern "C" int r2_native_aa_register(void);   /* r2_native_aa.cpp: RSX_FSR=2 DLAA, 3 FSR 3.1, 1 FSR1 */
 /* R2_RSX=vulkan (or native): ps3recomp's register-file draw engine driving
  * the Vulkan backend, presenting into the null backend's window. */
 static int rsx_vk_wanted(void)
@@ -231,6 +247,7 @@ static int rsx_select_init(uint32_t w, uint32_t h, const char* title)
         if (!getenv("PS3RECOMP_RSX_ENGINE")) _putenv("PS3RECOMP_RSX_ENGINE=dispatch");
         if (rsx_null_backend_init(w, h, title) == 0) {
             rsx_vulkan_backend_set_window(rsx_null_backend_get_hwnd());
+            r2_native_aa_register();
             if (rsx_vulkan_backend_init(w, h, title) == 0) {
                 s_rsx_vk = 1;
                 rsx_null_backend_suppress_present(1);
@@ -282,12 +299,13 @@ static void present_guest_frame(void)
 }
 
 extern "C" uint32_t cellGcm_rsx_put_snapshot(void);
+extern "C" int      cellGcm_rsx_work_pending(void);
 
 /* Resistance port (v86): the vblank clock in microseconds from QPC.
  * GetTickCount64 only moves in ~15.6 ms steps (timeBeginPeriod does not
  * change it), so the 60 Hz beat that completes flips fired on a jittery
  * 0/15.6/31.2 ms grid and a finished frame often waited a whole extra beat
- * for its flip. RSX_VBLANK_US overrides the period (default 16683 = 59.94 Hz). */
+ * for its flip. RSX_VBLANK_US overrides the period (default 16667 = 60 Hz). */
 static long long fc_us(void)
 {
     static LARGE_INTEGER f = { 0 };
@@ -298,6 +316,7 @@ static long long fc_us(void)
 
 static DWORD WINAPI frame_clock(LPVOID)
 {
+    port_place_walker();
     const char* title = getenv("PS3_TITLE");
     if (!title || !*title) title = "ps3recomp";
 
@@ -322,7 +341,50 @@ static DWORD WINAPI frame_clock(LPVOID)
     unsigned  last_flip = 0;
     long long next_tick = fc_us();
     static long long vb_us = -1;
-    if (vb_us < 0) { const char* e = getenv("RSX_VBLANK_US"); vb_us = e ? atoll(e) : 16683; if (vb_us < 1000) vb_us = 16683; }
+    /* RPCS3 vblank thread: period = (1'000'000 + vblank_ntsc * 1000) / vblank_rate us;
+     * rpcs3_config.yml has Vblank Rate 60, NTSC fixup off -> 60 Hz (16667 us),
+     * not 59.94. RSX_CFG_LEGACY=1 restores 16683. */
+    if (vb_us < 0) {
+        const char* l = getenv("RSX_CFG_LEGACY");
+        const long long def = (l && *l && *l != '0') ? 16683 : 16667;
+        const char* e = getenv("RSX_VBLANK_US"); vb_us = e ? atoll(e) : def; if (vb_us < 1000) vb_us = def;
+        /* R2 paces its frames on vblank: at 60 Hz it never exceeds 60 fps
+         * whatever R2_FPS asks (measured: R2_FPS=120 -> 60.0). Like RPCS3's
+         * Vblank Rate setting used with unlocked-fps patches, the vblank rate
+         * follows the target above 60; uncapped uses max(display, 240) Hz.
+         * RSX_VBLANK_US overrides; GCM_VBLANK_FOLLOW_FPS=0 keeps 60 Hz. */
+        const char* f = getenv("GCM_VBLANK_FOLLOW_FPS");
+        if (!e && !(f && *f == '0')) {
+            const double fps = r2_fps_target();
+            double hz = fps;
+            if (fps <= 0.0) { hz = r2_display_refresh_hz(); if (hz < 240.0) hz = 240.0; }
+            if (hz > 60.5) { vb_us = (long long)(1e6 / hz + 0.5); if (vb_us < 1000) vb_us = 1000; }
+        }
+    }
+
+    /* RPCS3 handle_emu_flip's frame limit: how soon after the previous flip a
+     * flip may complete. GCM_FRAME_LIMIT=auto (default): one vblank (RPCS3
+     * "Auto") up to 60 fps, or a little sooner when R2_FPS asks for a faster
+     * display; off above 60 / uncapped, where the game limiter
+     * (r2_frame_period) is the only pacer (RPCS3's Unlock FPS patch wants
+     * frame limit Off). GCM_FRAME_LIMIT=off|vblank|<Hz> overrides. */
+    long long limit_us;
+    {
+        const double fps = r2_fps_target();
+        const char* e = getenv("GCM_FRAME_LIMIT");
+        if (e && (!_stricmp(e, "off") || !_stricmp(e, "0") || !_stricmp(e, "none"))) limit_us = 0;
+        else if (e && !_stricmp(e, "vblank")) limit_us = vb_us;
+        else if (e && atof(e) >= 1.0) limit_us = (long long)(1e6 / atof(e));
+        else if (fps > 0.0 && fps <= 60.5) {
+            const long long f = (long long)(1e6 / fps);
+            limit_us = f < vb_us ? f : vb_us;
+        } else limit_us = 0;
+    }
+    /* RPCS3 vblank thread: vblank, flip completion and handler delivery on a
+     * thread of their own. GCM_VBLANK_THREAD=0 keeps them in this loop. */
+    const int vthread = cellGcm_vblank_thread_start(vb_us, limit_us);
+    fprintf(stderr, "[rsx] vblank %lld us, frame limit %lld us, %s\n", vb_us, limit_us,
+            vthread ? "vblank thread" : "host-loop ticks");
 
     for (;;) {
         /* Resistance port: wake as soon as the guest publishes new FIFO work
@@ -349,11 +411,58 @@ static DWORD WINAPI frame_clock(LPVOID)
                         while (cellGcm_rsx_put_snapshot() == p0 && GetTickCount64() - t0 < 2)
                             SwitchToThread();
                         if (cellGcm_rsx_put_snapshot() == p0) Sleep(1);
-                    } else {
+                    } else if (spin == 3) {
                         unsigned k = 0;
                         while (cellGcm_rsx_put_snapshot() == p0 &&
                                fc_us() - next_tick < 0) {
-                            if (++k & 63u) YieldProcessor(); else SwitchToThread();
+                            if (++k & 63u) YieldProcessor();
+                            else {
+                                if (cellGcm_flip_pace_poll(fc_us(), vb_us)) break;
+                                /* deferred labels wait on GPU queries: walk */
+                                if (cellGcm_rsx_work_pending()) break;
+                                SwitchToThread();
+                            }
+                        }
+                    } else {
+                        /* Spin briefly (the guest's kick/wait-label round
+                         * trips are microseconds apart), then poll on a
+                         * high-resolution timer. Spinning with SwitchToThread
+                         * until the next vblank burned ~half a core and ~180k
+                         * context switches/s idle in the menu. The guest's put
+                         * is a plain store, so there is nothing to wake on.
+                         * RSX_SPINWAIT=3 restores the full spin; RSX_IDLE_US /
+                         * RSX_SPIN_US tune the poll period / spin window. */
+                        static long long spin_us = -1, idle_us = -1;
+                        static HANDLE tmr = NULL;
+                        if (spin_us < 0) {
+                            const char* e = getenv("RSX_SPIN_US");  spin_us = e ? atoll(e) : 150;
+                            e = getenv("RSX_IDLE_US"); idle_us = e ? atoll(e) : 100;
+                            if (idle_us < 10) idle_us = 10;
+                            tmr = CreateWaitableTimerExW(NULL, NULL,
+                                      0x00000002 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */,
+                                      TIMER_ALL_ACCESS);
+                            if (!tmr) { timeBeginPeriod(1); tmr = CreateWaitableTimerW(NULL, TRUE, NULL); }
+                        }
+                        const long long ts = fc_us();
+                        unsigned k = 0;
+                        for (;;) {
+                            if (cellGcm_rsx_put_snapshot() != p0) break;
+                            const long long now_s = fc_us();
+                            if (now_s - next_tick >= 0) break;
+                            if (now_s - ts < spin_us) {
+                                if (++k & 63u) { YieldProcessor(); continue; }
+                            }
+                            if (cellGcm_flip_pace_poll(now_s, vb_us)) break;
+                            if (cellGcm_rsx_work_pending()) break;
+                            if (now_s - ts < spin_us) continue;
+                            long long w = next_tick - now_s;
+                            if (w > idle_us) w = idle_us;
+                            if (tmr) {
+                                LARGE_INTEGER due; due.QuadPart = -(w * 10);
+                                if (SetWaitableTimer(tmr, &due, 0, NULL, NULL, FALSE))
+                                    WaitForSingleObject(tmr, 2);
+                                else Sleep(0);
+                            } else Sleep(0);
                         }
                     }
                 }
@@ -363,7 +472,9 @@ static DWORD WINAPI frame_clock(LPVOID)
         long long now = fc_us();
 
         int fired = 0;
-        while (now - next_tick >= 0 && fired < 240) {
+        /* With the vblank thread the beat here only paces the drain and
+         * present: one per period, never a burst after a stall. */
+        while (now - next_tick >= 0 && fired < (vthread ? 1 : 240)) {
             cellGcmTickVBlank();
             cellGcmTickFlip();
             /* Present a pending flip BEFORE draining any further. The flip
@@ -383,32 +494,36 @@ static DWORD WINAPI frame_clock(LPVOID)
             fired++;
         }
         if (fired >= 240) next_tick = now;   /* fell too far behind -- resync */
+        if (vthread && now - next_tick >= 0) next_tick = now + vb_us;
 
         /* Drain at the outer cadence too, not only on the 16 ms tick: titles
          * fence every render pass on a label the drain writes, and one wave of
          * those at 16 ms apiece paces the guest into single-figure frame rates.
          * The real RSX writes them in microseconds. */
+        cellGcm_flip_pace_poll(fc_us(), vb_us);
         if (rsx_ok) {
             if (cellGcm_take_flip_pending()) {
                 present_guest_frame();
                 last_flip = cellGcm_flip_request_count();
             }
             cellGcm_rsx_process_fifo();
+            /* A flip the drain just reached: present now, not a loop later. */
+            if (cellGcm_take_flip_pending()) {
+                present_guest_frame();
+                last_flip = cellGcm_flip_request_count();
+            }
 
             if (rsx_backend_pump() != 0) {
                 rsx_ok = 0;              /* window closed */
                 continue;
             }
-            /* Present on a guest flip. A present on a fixed clock can catch the
-             * drain mid-frame and flash a partial one. Before the first flip
-             * present freely, so the window is not blank during boot. */
-            unsigned fc = cellGcm_flip_request_count();
-            if (fc != last_flip) {
-                present_guest_frame();
-                last_flip = fc;
-            } else if (fc == 0) {
+            /* Present only a flip the drain has reached (s_flip_pending, taken
+             * above). Presenting on a change of the flip-request counter could
+             * show a buffer before the walker executed its flip, and presented
+             * the same frame a second time. Before the first flip present
+             * freely, so the window is not blank during boot. */
+            if (cellGcm_flip_request_count() == 0)
                 rsx_backend_present();
-            }
         }
     }
     return 0;
@@ -449,6 +564,19 @@ static void derive_vfs_root(const char* eboot)
  * A fault on a committed vm_base page is such a protection fault and goes to
  * g_vm_access_violation_hook; only reserved pages are demand-committed, one
  * 4 KB page at a time, so committing never resets a neighbour's protection. */
+/* Pages seen committed, one bit per 4 KB page per view. Guest pages are never
+ * decommitted, so a set bit lets the protection-fault path skip VirtualQuery. */
+static volatile LONG vm_committed_bits[2][(VM_SIZE / 0x1000 + 31) / 32];
+static inline bool vm_known_committed(int view, uintptr_t off)
+{
+    const size_t pg = off >> 12;
+    return (vm_committed_bits[view][pg >> 5] >> (pg & 31)) & 1;
+}
+static inline void vm_mark_committed(int view, uintptr_t off)
+{
+    const size_t pg = off >> 12;
+    _InterlockedOr(&vm_committed_bits[view][pg >> 5], (LONG)(1u << (pg & 31)));
+}
 static void vm_commit_range(uint8_t* p, size_t len)
 {
     for (uint8_t* q = p; q < p + len; q += 0x1000) {
@@ -466,10 +594,14 @@ static LONG WINAPI vm_commit_veh(EXCEPTION_POINTERS* ep)
         for (int i = 0; i < 2; i++) {
             const uintptr_t base = (uintptr_t)bases[i];
             if (!base || fault < base || fault >= base + VM_SIZE) continue;
-            MEMORY_BASIC_INFORMATION mbi;
-            if (VirtualQuery((void*)fault, &mbi, sizeof(mbi)) && mbi.State == MEM_RESERVE) {
-                vm_commit_range((uint8_t*)(fault & ~(uintptr_t)0xFFFF), 0x10000);
-                return EXCEPTION_CONTINUE_EXECUTION;
+            MEMORY_BASIC_INFORMATION mbi = {};
+            if (!vm_known_committed(i, fault - base)) {
+                if (VirtualQuery((void*)fault, &mbi, sizeof(mbi)) && mbi.State == MEM_RESERVE) {
+                    vm_commit_range((uint8_t*)(fault & ~(uintptr_t)0xFFFF), 0x10000);
+                    return EXCEPTION_CONTINUE_EXECUTION;
+                }
+                if (mbi.State == MEM_COMMIT)
+                    vm_mark_committed(i, fault - base);
             }
             if (i == 0 && g_vm_access_violation_hook &&
                 g_vm_access_violation_hook((uint32_t)(fault - base), is_write))
@@ -488,6 +620,12 @@ static LONG WINAPI vm_commit_veh(EXCEPTION_POINTERS* ep)
                 if (InterlockedExchange(&warned, 1) == 0)
                     fprintf(stderr, "[vm] unclaimed protection fault at guest 0x%08X; unprotecting\n",
                             (uint32_t)(fault - base));
+                /* Through the guard registry, so its owner mask and the
+                 * caches keyed on protection stay in step with the page. */
+                if (g_vm_guard_reconcile_hook) {
+                    if (g_vm_guard_reconcile_hook((uint32_t)(fault - base), is_write))
+                        return EXCEPTION_CONTINUE_EXECUTION;
+                }
                 DWORD old;
                 if (VirtualProtect((void*)(fault & ~(uintptr_t)0xFFF), 0x1000, PAGE_READWRITE, &old))
                     return EXCEPTION_CONTINUE_EXECUTION;
@@ -557,6 +695,42 @@ static void harness_guest_caller(uint32_t opd, uint64_t a0, uint64_t a1,
     ppu_guest_call(opd, a0, a1, a2, a3, a4, a5, a6, a7);
 }
 
+#ifdef _WIN32
+#include <intrin.h>
+/* Resistance port: one [sys] line so a tester's run.log says what it ran on,
+ * and a readable message instead of an illegal-instruction crash on CPUs
+ * without the x86-64-v3 set (AVX2/FMA/BMI2) the lifted code is built for. */
+static void port_sys_report(void)
+{
+    int r[4]; char brand[49] = {0};
+    __cpuid(r, 0x80000000);
+    if ((unsigned)r[0] >= 0x80000004u)
+        for (int i = 0; i < 3; i++) { __cpuid(r, 0x80000002 + i); memcpy(brand + 16 * i, r, 16); }
+    __cpuid(r, 1);
+    const int fma = (r[2] >> 12) & 1, osx = (r[2] >> 27) & 1, avx = (r[2] >> 28) & 1;
+    __cpuidex(r, 7, 0);
+    const int avx2 = (r[1] >> 5) & 1, bmi2 = (r[1] >> 8) & 1;
+    const int ymm = osx && ((_xgetbv(0) & 6) == 6);
+    SYSTEM_INFO si; GetSystemInfo(&si);
+    MEMORYSTATUSEX ms; ms.dwLength = sizeof ms; GlobalMemoryStatusEx(&ms);
+    OSVERSIONINFOW ov = {0}; ov.dwOSVersionInfoSize = sizeof ov;
+    typedef LONG (WINAPI *rtlgv_t)(OSVERSIONINFOW*);
+    rtlgv_t rtlgv = (rtlgv_t)GetProcAddress(GetModuleHandleA("ntdll.dll"), "RtlGetVersion");
+    if (rtlgv) rtlgv(&ov);
+    const char* b = brand; while (*b == ' ') b++;
+    printf("[sys] CPU: %s | %lu logical CPUs | RAM %.1f GB (%.1f GB free) | Windows %lu.%lu.%lu | AVX2 %d FMA %d BMI2 %d\n",
+           *b ? b : "unknown", (unsigned long)si.dwNumberOfProcessors,
+           ms.ullTotalPhys / 1073741824.0, ms.ullAvailPhys / 1073741824.0,
+           ov.dwMajorVersion, ov.dwMinorVersion, ov.dwBuildNumber, avx && avx2 && ymm, fma, bmi2);
+    if (!(avx && avx2 && fma && bmi2 && ymm)) {
+        fprintf(stderr, "ERROR: this CPU lacks AVX2/FMA/BMI2, which this build requires\n");
+        MessageBoxA(NULL, "This build needs a CPU with AVX2/FMA/BMI2 (Intel Haswell / AMD Zen or newer).\n"
+                          "Your CPU does not support it, so the game cannot run.", "Unsupported CPU", MB_ICONERROR);
+        exit(1);
+    }
+}
+#endif
+
 extern "C" void cellGame_init_from_paramsfo(const char* sfo_path);
 
 int main(int argc, char** argv)
@@ -565,6 +739,14 @@ int main(int argc, char** argv)
         printf("usage: %s <PPU ELF>\n", argv[0]);
         return 2;
     }
+
+    /* Before anything starts: the profile sets env switches that the
+     * subsystems read when they first run. R2_PRESET fills in the settings
+     * that aren't set explicitly, before the profile reads them. */
+    if (const char* preset = getenv("R2_PRESET"); preset && *preset)
+        r2ac::apply_preset_env(preset, r2ac::Phase::startup);
+    port_cpu_profile_init();
+    r2_crash_init();
 
 #ifdef _WIN32
 #pragma comment(lib, "winmm.lib")
@@ -576,6 +758,9 @@ int main(int argc, char** argv)
 #endif
 
     printf("=== ps3recomp game runner ===\n");
+#ifdef _WIN32
+    port_sys_report();
+#endif
 
     if (!alloc_guest_vm()) {
         fprintf(stderr, "ERROR: could not allocate the guest address space\n");
@@ -608,6 +793,13 @@ int main(int argc, char** argv)
     /* Install the guest-callback hook, then start the frame clock. It no-ops
      * until the title registers its vblank and flip handlers during init. */
     g_ps3_guest_caller = harness_guest_caller;
+    /* R2_FPS and RSX_VSYNC=auto are settled before any backend reads them. */
+    {
+        const double fps = r2_fps_target();
+        printf("[boot] frame target %s%.3f fps, RSX_VSYNC=%s\n", fps > 0.0 ? "" : "uncapped ", fps,
+               getenv("RSX_VSYNC") ? getenv("RSX_VSYNC") : "(unset)");
+    }
+    r2_patches_apply();      /* RPCS3 patch.yml data patches (r2_patches.cpp) */
     CreateThread(NULL, 4u * 1024 * 1024, frame_clock, NULL, 0, NULL);
 
     printf("\n[boot] dispatching entry OPD 0x%08X (stack top 0x%08X)\n\n",

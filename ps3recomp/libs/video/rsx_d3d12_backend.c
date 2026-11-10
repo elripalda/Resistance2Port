@@ -6380,8 +6380,15 @@ static void vp_record_cb(u32 slot, int vs_idx, const D3D12DrawRecord* dr)
                           vpx[0], vpx[1], vpx[4], vpx[5]);
           }
       } }
-    /* vp_branch (vpx[8..11]): the transform branch bits for BRB/CLB. */
-    { u32* vb = (u32*)(vpx + 8); vb[0] = st->transform_branch_bits; vb[1] = vb[2] = vb[3] = 0; }
+    /* vp_branch (vpx[8..11], rsx_vp_decompiler.h): x = transform branch bits
+     * for BRB/CLB; y/z = VERTEX_ATTRIB_OUTPUT_MASK gating (RPCS3
+     * insertMainEnd) once the title has set the mask. No user clip planes
+     * or POINT_SIZE are tracked on this path, so z carries no plane bits and
+     * w is a 1.0 point size. */
+    { u32* vb = (u32*)(vpx + 8); vb[0] = st->transform_branch_bits;
+      vb[1] = st->vertex_attrib_output_mask;
+      vb[2] = st->vertex_attrib_output_mask ? RSX_VP_BRANCH_ENV_VALID : 0u;
+      vb[3] = 0x3F800000u; }
     /* Resistance port: polygon offset applied per draw in the vertex shader
      * (RSX_POLY_OFFSET=2, default): the game varies scale/bias per decal, far
      * too many distinct values for PSO keys. Window depth moves by `bias`
@@ -9978,7 +9985,8 @@ static int rsx_async(void)
  * calls render_frame) and the RSX_ASYNC render thread, for the debug console's
  * auto-profile. */
 static volatile unsigned long s_rsx_fifo_tid = 0, s_rsx_render_tid = 0;
-unsigned long rsx_fifo_host_tid(void) { return s_rsx_fifo_tid; }
+unsigned long rsx_draw_engine_host_tid(void);
+unsigned long rsx_fifo_host_tid(void) { return s_rsx_fifo_tid ? s_rsx_fifo_tid : rsx_draw_engine_host_tid(); }
 int rsx_perf_render_load(void) { return s_perf_load_pct; }
 unsigned long rsx_render_host_tid(void) { return s_rsx_render_tid; }
 static DWORD WINAPI rt_main(LPVOID p)
@@ -10613,6 +10621,11 @@ static void vp_async_drain(void)
  * the one-frame "static" right after the boot intro. RSX_LABEL_FLUSH=0 off. */
 void rsx_backend_flush_reads(void)
 {
+    /* FP1 (RSX_PERF_MT): every guest-visible label / semaphore write comes
+     * through here -- the engine thread first runs all the walker queued, so
+     * the guest never sees a label before the draws ahead of it read their
+     * vertex, index and texture bytes. A no-op with MT off. */
+    { extern void rsx_draw_engine_mt_drain(void); rsx_draw_engine_mt_drain(); }
     static int en = -1;
     if (en < 0) { const char* e = getenv("RSX_LABEL_FLUSH"); en = e ? atoi(e) : 1; }
     if (!en || t_render_thread) return;

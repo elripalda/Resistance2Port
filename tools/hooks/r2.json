@@ -602,6 +602,212 @@
      "        goto loc_005AF594;"
     ]
    }
+  ],
+  "func_0017F8EC": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_0017F8EC(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" uint32_t r2_timing_frames(uint32_t n, uint32_t maxv);   /* R2: 30 Hz frame counts at any fps (r2_patches.cpp) */",
+     "void func_0017F8EC(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 67,
+    "ctx": "        ctx->gpr[7] = R_7 = vm_read32(R_8 + 0x34);",
+    "rm": [
+     "        ctx->gpr[29] = R_29 = R_3 + (int64_t)(0x96);"
+    ],
+    "add": [
+     "        ctx->gpr[29] = R_29 = R_3 + (int64_t)r2_timing_frames(0x96, 0x7FFFFFFF);"
+    ]
+   }
+  ],
+  "func_005140A8": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_005140A8(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" uint32_t r2_timing_frames(uint32_t n, uint32_t maxv);   /* R2: 30 Hz frame counts at any fps (r2_patches.cpp) */",
+     "void func_005140A8(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 44,
+    "ctx": "        ctx->gpr[12] = R_12 = vm_read32_fast(R_30 + -0x7FD0);",
+    "rm": [
+     "        ctx->gpr[10] = R_10 = (int64_t)(int32_t)(0x1E);"
+    ],
+    "add": [
+     "        ctx->gpr[10] = R_10 = (int64_t)r2_timing_frames(0x1E, 0xFF);"
+    ]
+   },
+   {
+    "at": 49,
+    "ctx": "        { uint32_t _b=(uint32_t)R_10; ctx->gpr[8] = R_8 = (uint32_t)(_b==0?0:(uint32_t)R_6/_b); }",
+    "rm": [
+     "        ctx->gpr[7] = R_7 = R_8 * (uint64_t)(int64_t)(0x1E);"
+    ],
+    "add": [
+     "        ctx->gpr[7] = R_7 = R_8 * (uint64_t)(uint32_t)R_10;"
+    ]
+   }
+  ],
+  "func_0052BE60": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_0052BE60(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" uint32_t r2_timing_frames(uint32_t n, uint32_t maxv);   /* R2: 30 Hz frame counts at any fps (r2_patches.cpp) */",
+     "void func_0052BE60(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 103,
+    "ctx": "        ctx->gpr[11] = R_11 = vm_read32_fast(R_30 + -0x7FD4);",
+    "rm": [
+     "        ctx->gpr[12] = R_12 = (int64_t)(int32_t)(0x3C);"
+    ],
+    "add": [
+     "        ctx->gpr[12] = R_12 = (int64_t)r2_timing_frames(0x3C, 0x7FFFFFFF);"
+    ]
+   },
+   {
+    "at": 107,
+    "ctx": "        { uint32_t _b=(uint32_t)R_12; ctx->gpr[10] = R_10 = (uint32_t)(_b==0?0:(uint32_t)R_7/_b); }",
+    "rm": [
+     "        ctx->gpr[8] = R_8 = R_10 * (uint64_t)(int64_t)(0x3C);"
+    ],
+    "add": [
+     "        ctx->gpr[8] = R_8 = R_10 * (uint64_t)(uint32_t)R_12;"
+    ]
+   }
+  ],
+  "func_0057CDEC": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_0057CDEC(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" uint32_t r2_timing_frames(uint32_t n, uint32_t maxv);   /* R2: 30 Hz frame counts at any fps (r2_patches.cpp) */",
+     "void func_0057CDEC(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 130,
+    "ctx": "        ctx->gpr[8] = R_8 = ppc_rldicl(R_10, 0, 32);",
+    "rm": [
+     "        ctx->gpr[6] = R_6 = (int64_t)(int32_t)(0x3C);"
+    ],
+    "add": [
+     "        ctx->gpr[6] = R_6 = (int64_t)r2_timing_frames(0x3C, 0x7FFFFFFF);"
+    ]
+   },
+   {
+    "at": 135,
+    "ctx": "        { uint32_t _b=(uint32_t)R_6; ctx->gpr[5] = R_5 = (uint32_t)(_b==0?0:(uint32_t)R_9/_b); }",
+    "rm": [
+     "        ctx->gpr[4] = R_4 = R_5 * (uint64_t)(int64_t)(0x3C);"
+    ],
+    "add": [
+     "        ctx->gpr[4] = R_4 = R_5 * (uint64_t)(uint32_t)R_6;"
+    ]
+   }
+  ],
+  "func_00599620": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_00599620(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" uint32_t r2_timing_frames(uint32_t n, uint32_t maxv);   /* R2: 30 Hz frame counts at any fps (r2_patches.cpp) */",
+     "void func_00599620(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 103,
+    "ctx": "        ctx->gpr[12] = R_12 = vm_read32_fast(R_30 + -0x7FE8);",
+    "rm": [
+     "        ctx->gpr[10] = R_10 = (int64_t)(int32_t)(0x3C);"
+    ],
+    "add": [
+     "        ctx->gpr[10] = R_10 = (int64_t)r2_timing_frames(0x3C, 0x7FFFFFFF);"
+    ]
+   },
+   {
+    "at": 107,
+    "ctx": "        { uint32_t _b=(uint32_t)R_10; ctx->gpr[8] = R_8 = (uint32_t)(_b==0?0:(uint32_t)R_28/_b); }",
+    "rm": [
+     "        ctx->gpr[7] = R_7 = R_8 * (uint64_t)(int64_t)(0x3C);"
+    ],
+    "add": [
+     "        ctx->gpr[7] = R_7 = R_8 * (uint64_t)(uint32_t)R_10;"
+    ]
+   }
+  ],
+  "func_001721C8": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_001721C8(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" double r2_lod_scale(void);   /* R2: LOD distance multiplier (r2_patches.cpp) */",
+     "void func_001721C8(ppu_context* ctx) {"
+    ]
+   },
+   {
+    "at": 217,
+    "ctx": "        { uint32_t tmp = vm_read32(R_27 + 0x48); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[8] = ftmp; }",
+    "rm": [
+     "        ctx->fpr[1] = ppu_fp_single(ppu_fmul(ctx->fpr[1], ctx->fpr[8]));"
+    ],
+    "add": [
+     "        ctx->fpr[1] = ppu_fp_single(ppu_fmul(ctx->fpr[1], ctx->fpr[8]) * r2_lod_scale());"
+    ]
+   }
+  ],
+  "func_0067E8B0": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_0067E8B0(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_frustum_aspect(ppu_context* ctx, int hfov);   /* R2: ultrawide Hor+ (r2_patches.cpp) */",
+     "void func_0067E8B0(ppu_context* ctx) {",
+     "        r2_frustum_aspect(ctx, 1);"
+    ]
+   }
+  ],
+  "func_0067E6F4": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_0067E6F4(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" void r2_frustum_aspect(ppu_context* ctx, int hfov);   /* R2: ultrawide Hor+ (r2_patches.cpp) */",
+     "void func_0067E6F4(ppu_context* ctx) {",
+     "        r2_frustum_aspect(ctx, 0);"
+    ]
+   }
   ]
  },
  "preamble": [],

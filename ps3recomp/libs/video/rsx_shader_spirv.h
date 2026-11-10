@@ -17,6 +17,17 @@
  * binding holding an array of 16, and `SamplerState rsx_samp[16]` likewise.
  * Vertex-texture units (t16..t19) land on TEXTURE_BINDING + 16..19.
  *
+ * Optional decompiler modes (off by default) add, with explicit
+ * [[vk::binding]]s that the set-0 shifts above do not move:
+ *   rsx_vp_set_gpu_fetch (FP5): cbuffer VPFetch : register(b2) -> set 0
+ *     binding RSX_SPIRV_VPFETCH_BINDING (uniform buffer, 144 bytes); the
+ *     attribute streams vp_fstream0/1 -> set 2 bindings 0/1 (storage buffers
+ *     for RSX_VP_FETCH_BYTEADDR, uniform texel buffers R32_UINT for
+ *     RSX_VP_FETCH_TEXEL). The vertex stage then has no vertex inputs.
+ *   rsx_fp_set_bindless (FP9): set 1 bindings 0/1/2 = sampled-image arrays
+ *     (2D / 3D / cube, RSX_FP_BINDLESS_TEXTURES each), binding 3 = sampler
+ *     array (RSX_FP_BINDLESS_SAMPLERS); the t0..t15 / s0..s15 bank is gone.
+ *
  * Locations are numbered in declaration order (TProgram::mapIO). The vertex
  * decompiler always declares ATTR0..ATTR15 in order, so vertex input
  * location n is RSX attribute n; both decompilers declare the varyings in the
@@ -39,8 +50,16 @@ extern "C" {
 
 #define RSX_SPIRV_VPCONST_BINDING  0u
 #define RSX_SPIRV_PSCONST_BINDING  1u
+#define RSX_SPIRV_VPFETCH_BINDING  2u
+#define RSX_SPIRV_BINDLESS_SET     1u
+#define RSX_SPIRV_VFETCH_SET       2u
 #define RSX_SPIRV_TEXTURE_BINDING  16u
 #define RSX_SPIRV_SAMPLER_BINDING  48u
+/* Point sprites: HLSL has no PointCoord semantic, so the fragment decompiler
+ * declares a float2 input `[[vk::location(30)]]`; the translation rewrites
+ * that input's Location 30 decoration into BuiltIn PointCoord. No varying of
+ * the vertex stage uses the location. */
+#define RSX_SPIRV_POINTCOORD_LOCATION 30u
 
 /* 1 when built with glslang, 0 when the stub is in. */
 int rsx_hlsl_to_spirv_available(void);

@@ -1075,36 +1075,177 @@ static void r2ml_check(int fed, float rate, int* sign, int* bad, const char* wha
  * RPCS3's "Unlock FPS" patch (Whatcookie) relies on: it removes that wait and
  * sets the 1/30 (0x00D529D8) and 1/75 (0x00D69EB8) frame-time floors to 0.0001.
  * R2_FPS != 30 does the same and paces frames here instead, precisely, at
- * 1/R2_FPS. */
+ * 1/R2_FPS.
+ *
+ *   R2_FPS=30                 the game's own limiter (unpatched)
+ *   R2_FPS=<Hz>               31..500, fractional allowed (59.94)
+ *   R2_FPS=refresh|display    the display's exact refresh rate
+ *   R2_FPS=0|uncapped|max     floors patched, no wait at all
+ *
+ * RSX_VSYNC=auto picks the present mode from that: full vsync (FIFO) when the
+ * target is the display's refresh rate, MAILBOX otherwise (uncapped, or a
+ * rate the display does not run at). With full vsync and a target within
+ * 1 Hz of the refresh, the target snaps to the exact refresh (59.94 Hz
+ * panels) so the limiter never drifts against the swapchain; R2_FPS_SNAP=0
+ * keeps the requested rate. */
+
 extern "C" void ppu_gcm_pump(void);
+
+/* The primary display's exact refresh rate (QueryDisplayConfig's rational,
+ * 59.94 rather than EnumDisplaySettings' rounded 59 or 60). */
+extern "C" double r2_display_refresh_hz(void)
+{
+    static double hz = -1.0;
+    if (hz >= 0.0) return hz;
+    hz = 0.0;
+    UINT32 np = 0, nm = 0;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &np, &nm) == ERROR_SUCCESS && np && nm) {
+        std::vector<DISPLAYCONFIG_PATH_INFO> paths(np);
+        std::vector<DISPLAYCONFIG_MODE_INFO> modes(nm);
+        if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &np, paths.data(), &nm, modes.data(), NULL) == ERROR_SUCCESS) {
+            double first = 0.0;
+            for (UINT32 i = 0; i < np; i++) {
+                const DISPLAYCONFIG_RATIONAL r = paths[i].targetInfo.refreshRate;
+                if (!r.Denominator || !r.Numerator) continue;
+                const double v = (double)r.Numerator / (double)r.Denominator;
+                if (first == 0.0) first = v;
+                const UINT32 mi = paths[i].sourceInfo.modeInfoIdx;
+                if (mi < nm && modes[mi].infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE &&
+                    modes[mi].sourceMode.position.x == 0 && modes[mi].sourceMode.position.y == 0) {
+                    hz = v; break;   /* the primary display sits at the origin */
+                }
+            }
+            if (hz == 0.0) hz = first;
+        }
+    }
+    if (hz < 20.0) {
+        DEVMODEW dm; memset(&dm, 0, sizeof dm); dm.dmSize = sizeof dm;
+        if (EnumDisplaySettingsW(NULL, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency > 1)
+            hz = dm.dmDisplayFrequency == 59 ? 60000.0 / 1001.0 : (double)dm.dmDisplayFrequency;
+    }
+    if (hz < 20.0) hz = 60.0;
+    return hz;
+}
+
+/* The frame-rate target, settled once (and RSX_VSYNC=auto with it): 30 = the
+ * game's own limiter, 0 = uncapped, otherwise frames per second. */
+extern "C" double r2_fps_target(void)
+{
+    static double fps = -1.0;
+    if (fps >= 0.0) return fps;
+    const char* e = getenv("R2_FPS");
+    double f;
+    if (!e || !*e) f = 30.0;
+    else if (!_stricmp(e, "uncapped") || !_stricmp(e, "max") || !_stricmp(e, "unlimited") ||
+             !_stricmp(e, "off") || !strcmp(e, "0")) f = 0.0;
+    else if (!_stricmp(e, "refresh") || !_stricmp(e, "display")) f = r2_display_refresh_hz();
+    else if (!_stricmp(e, "vrr")) {   /* just under the refresh rate: stays inside the VRR window */
+        const double hz = r2_display_refresh_hz();
+        f = hz - hz * hz / 3600.0;
+        if (f < 30.0) f = 30.0;
+    }
+    else {
+        f = atof(e);
+        if (f < 30.0) f = 30.0;
+        if (f > 500.0) f = 500.0;
+    }
+    const double hz = r2_display_refresh_hz();
+    const int near_refresh = f > 0.0 && fabs(f - hz) < 1.0;
+    const char* v = getenv("RSX_VSYNC");
+    if (v && !_stricmp(v, "auto")) {
+        _putenv_s("RSX_VSYNC", near_refresh ? "1" : "adaptive");
+        v = getenv("RSX_VSYNC");
+    }
+    const int full_vsync = v && _stricmp(v, "adaptive") && atoi(v) > 0;
+    const char* sn = getenv("R2_FPS_SNAP");
+    if (near_refresh && full_vsync && f != 30.0 && !(sn && *sn == '0')) f = hz;
+    fps = f;
+    fprintf(stderr, "[fps] target %s%.3f (display %.3f Hz, RSX_VSYNC=%s)\n",
+            f > 0.0 ? "" : "uncapped ", f, hz, v ? v : "(unset)");
+    return fps;
+}
+
+/* Sleep until `deadline` (timebase ticks) on a high-resolution waitable timer,
+ * in chunks of at most 2 ms so pending GCM handlers keep being pumped, then
+ * spin the last R2_PACE_SPIN_US (default 500) on the clock. Sleep(n) and
+ * SwitchToThread overshot by up to a millisecond, which at 120+ fps is a
+ * visible share of the frame. */
+static void r2_pace_wait(uint64_t deadline)
+{
+    static HANDLE tmr = NULL;
+    static int init = 0;
+    static double spin_us = 500.0;
+    if (!init) {
+        init = 1;
+        tmr = CreateWaitableTimerExW(NULL, NULL, 0x00000002 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */,
+                                     TIMER_ALL_ACCESS);
+        if (!tmr) { tmr = CreateWaitableTimerW(NULL, TRUE, NULL); spin_us = 1500.0; }
+        const char* e = getenv("R2_PACE_SPIN_US");
+        if (e) spin_us = atof(e);
+        if (spin_us < 0.0) spin_us = 0.0;
+    }
+    for (;;) {
+        const uint64_t now = ppu_timebase_now();
+        if (now >= deadline) return;
+        const double rem_us = (double)(deadline - now) / 79.8;
+        if (rem_us > spin_us) {
+            ppu_gcm_pump();
+            double w = rem_us - spin_us;
+            if (w > 2000.0) w = 2000.0;
+            LARGE_INTEGER due; due.QuadPart = -(LONGLONG)(w * 10.0);
+            if (tmr && SetWaitableTimer(tmr, &due, 0, NULL, NULL, FALSE)) WaitForSingleObject(tmr, 10);
+            else Sleep(0);
+        } else {
+            YieldProcessor();
+        }
+    }
+}
+
+extern "C" volatile LONG r2_game_frames;   /* main.cpp r2_crash.inc: hang watchdog */
+extern "C" volatile int g_r2pc_paused;     /* r2_pcport.cpp: focus pause / quit prompt */
+extern "C" volatile int g_ps3_host_paused; /* sys_ppu_thread.c: idle the SPU / RSX wait loops */
+extern "C" void r2pf_frame_tick(void);       /* r2_pcfeat.cpp: F3 overlay frame times */
 extern "C" double r2_frame_period(double f1)
 {
-    static int fps = -1;
-    if (fps < 0) {
-        const char* e = getenv("R2_FPS");
-        fps = e ? atoi(e) : 30;
-        if (fps < 30) fps = 30;
-        if (fps > 240) fps = 240;
-        if (fps != 30) {
+    InterlockedIncrement(&r2_game_frames);
+    r2pf_frame_tick();
+    /* PC port: hold the game's frame loop here while paused (window in the
+     * background, R2_BACKGROUND=pause, or the quit prompt is up). The hang
+     * watchdog is fed so a long pause is not taken for a hang. */
+    if (g_r2pc_paused) {
+        /* parked at the frame boundary: SPU polls and the RSX FIFO wait nap too */
+        g_ps3_host_paused = 1;
+        while (g_r2pc_paused) { Sleep(5); InterlockedIncrement(&r2_game_frames); }
+        g_ps3_host_paused = 0;
+    }
+    static int init = 0;
+    static double fps = 30.0;
+    static int precise = 1;
+    if (!init) {
+        init = 1;
+        fps = r2_fps_target();
+        { const char* e = getenv("R2_PACE"); precise = !(e && *e == '0'); }
+        if (fps != 30.0) {
             const float c = 0.0001f; uint32_t w; memcpy(&w, &c, 4);
             if (vm_read32(0x00D529D8u) == 0x3D088889u) vm_write32(0x00D529D8u, w);
             { const uint32_t o = vm_read32(0x00D69EB8u); float f; memcpy(&f, &o, 4);
               if (f > 0.013f && f < 0.0135f) vm_write32(0x00D69EB8u, w); }
         }
-        fprintf(stderr, "[fps] target %d (floors %08x %08x)\n", fps, vm_read32(0x00D529D8u), vm_read32(0x00D69EB8u));
+        fprintf(stderr, "[fps] target %.3f%s (floors %08x %08x)\n", fps, fps > 0.0 ? "" : " (uncapped)",
+                vm_read32(0x00D529D8u), vm_read32(0x00D69EB8u));
     }
     if (r2_diag()) {
         static double seen[8]; static int ns;
         int k = 0; while (k < ns && seen[k] != f1) k++;
         if (k == ns && ns < 8) { seen[ns++] = f1; fprintf(stderr, "[fps] limiter period %.5f\n", f1); }
     }
-    if (fps == 30) {
+    if (fps == 30.0) {
         static uint64_t t0 = 0; static unsigned n = 0;
         const uint64_t now = ppu_timebase_now();
         if (!t0) t0 = now;
         n++;
         if (now - t0 >= 5ull * 79800000ull) {
-            fprintf(stderr, "[fps] 5 s: %.1f fps (target %d)\n", n * 79800000.0 / (double)(now - t0), fps);
+            fprintf(stderr, "[fps] 5 s: %.1f fps (target 30)\n", n * 79800000.0 / (double)(now - t0));
             t0 = now; n = 0;
         }
         return f1;
@@ -1115,30 +1256,38 @@ extern "C" double r2_frame_period(double f1)
      * on the RSX and running straight through, and sleeping after every quick
      * frame threw away the time the slow one had already lost (~40 fps where
      * the frames averaged under 1/60). The debt is capped at one frame, so a
-     * long stall never turns into a catch-up burst. */
-    static uint64_t next = 0;
-    const uint64_t step = 79800000ull / (uint64_t)fps;
+     * long stall never turns into a catch-up burst. The schedule is kept in
+     * fractional ticks so 59.94 or 144 do not drift. */
+    static double next = 0.0;
     uint64_t now = ppu_timebase_now();
-    if (next && now < next) {
-        for (;;) {
+    if (fps > 0.0) {
+        const double step = 79800000.0 / fps;
+        if (next > 0.0 && (double)now < next) {
+            if (precise) r2_pace_wait((uint64_t)next);
+            else for (;;) {
+                now = ppu_timebase_now();
+                if ((double)now >= next) break;
+                const double rem_us = (next - (double)now) / 79.8;
+                ppu_gcm_pump();
+                if (rem_us > 2600.0) Sleep((DWORD)(rem_us / 1000.0) - 1u);
+                else if (rem_us > 150.0) SwitchToThread();
+                else YieldProcessor();
+            }
             now = ppu_timebase_now();
-            if (now >= next) break;
-            const double rem_us = (double)(next - now) / 79.8;
-            ppu_gcm_pump();
-            if (rem_us > 2600.0) Sleep((DWORD)(rem_us / 1000.0) - 1u);
-            else if (rem_us > 150.0) SwitchToThread();
-            else YieldProcessor();
         }
+        if (next <= 0.0) next = (double)now;
+        next += step;
+        if (next + step < (double)now) next = (double)now - step;
+    } else {
+        ppu_gcm_pump();   /* uncapped: no wait, but keep handlers flowing */
     }
-    if (!next) next = now;
-    next += step;
-    if (next + step < now) next = now - step;
 
     { static uint64_t t0 = 0; static unsigned n = 0;
       if (!t0) t0 = now;
       n++;
       if (now - t0 >= 5ull * 79800000ull) {
-          fprintf(stderr, "[fps] 5 s: %.1f fps (target %d)\n", n * 79800000.0 / (double)(now - t0), fps);
+          fprintf(stderr, "[fps] 5 s: %.1f fps (target %s%.3f)\n", n * 79800000.0 / (double)(now - t0),
+                  fps > 0.0 ? "" : "uncapped ", fps);
           t0 = now; n = 0;
       } }
     return 0.0001;   /* the game's own wait then never holds the frame */
@@ -1153,6 +1302,7 @@ static int r2ml_is_pad0(uint32_t slot)
     if (slot < base || slot >= base + 8u * 0x1AC4u) return 1;   /* unknown: don't block */
     return slot - base < 0x1AC4u;
 }
+extern "C" volatile double g_ml_sens_y;   /* cellPad.c: PAD_MOUSE_SENS_Y */
 extern "C" void r2_mouselook_pre(ppu_context* ctx, uint32_t hero, uint32_t slot, uint32_t sp)
 {
     s_r2ml_hero = 0;
@@ -1174,6 +1324,10 @@ extern "C" void r2_mouselook_pre(ppu_context* ctx, uint32_t hero, uint32_t slot,
         static double zs = -1.0; if (zs < 0.0) { const char* e = getenv("R2_ZOOM_SENS"); zs = e ? atof(e) : 1.0;
                                                  if (zs < 0.0) zs = 0.0; if (zs > 2.0) zs = 2.0; }
         if (z > 0.01 && z < 1.0) s_r2ml_zoom = (float)pow(z, zs);
+        /* R2_ADS_SENS: extra multiplier while aiming / scoped (1 = as before) */
+        static double ads = -1.0; if (ads < 0.0) { const char* e = getenv("R2_ADS_SENS"); ads = e && *e ? atof(e) : 1.0;
+                                                   if (ads < 0.1) ads = 0.1; if (ads > 3.0) ads = 3.0; }
+        s_r2ml_zoom = (float)(s_r2ml_zoom * ads);
     }
     ml_wrf(sp + 0x90, 0.0f);
     ml_wrf(sp + 0x94, 0.0f);
@@ -1194,7 +1348,7 @@ extern "C" void r2_mouselook(ppu_context* ctx, uint32_t hero)
     const double k = g_ml_deg_per_count * (double)s_r2ml_zoom * (3.14159265358979323846 / 180.0);
     if (g_ml_invert_y) dy = -dy;
     ctx->fpr[1]  = (double)(float)(ctx->fpr[1]  + (double)s_r2ml_sx * (double)dx * k);   /* yaw delta */
-    ctx->fpr[29] = (double)(float)(ctx->fpr[29] + (double)s_r2ml_sy * (double)dy * k);   /* pitch delta */
+    ctx->fpr[29] = (double)(float)(ctx->fpr[29] + (double)s_r2ml_sy * (double)dy * k * g_ml_sens_y);   /* pitch delta */
     if (r2_diag()) { static int n = 0;
         if (n++ < 30) fprintf(stderr, "[mouselook] hero 0x%08X dx %ld dy %ld -> yaw %+.4f pitch %+.4f (pitch %.3f, limits %.3f..%.3f, zoom %.2f)%c",
                                       hero, dx, dy, ctx->fpr[1], ctx->fpr[29], ctx->fpr[22], (double)ml_rdf(hero + 0x484),
@@ -1513,9 +1667,10 @@ extern "C" void port_text_patch(uint32_t file_obj)
  * bound to that action in controls.txt ("[Space]", "LMB"), and the string
  * table entries that point at it are recorded; strings no table entry was
  * found for get a 3-character key name in place (a glyph is 3 bytes of UTF-8).
- * Both edits are kept as {original, keyboard} pairs and switched whenever a
- * controller is plugged in or out (cellPad.c g_r2_input_mode_cb), so a
- * controller shows the PS3 icons. R2_KEY_PROMPTS=0 turns this off. */
+ * Every edit is kept as {original, keyboard, Xbox} and switched to the last
+ * used device (cellPad.c g_r2_input_mode_cb: 1 keys, 2 Xbox buttons -- Cross
+ * = [A], Circle = [B], L1 = [LB]... -- 0 PS3 icons for a Sony controller or
+ * R2_PAD_GLYPHS=ps). R2_KEY_PROMPTS=0 turns this off. */
 #include <mutex>
 struct R2Glyph { uint16_t cp; const char* pad; const char* hint; const char* fixed; const char* full; };
 static const R2Glyph s_r2_glyphs[] = {
@@ -1536,6 +1691,22 @@ static const R2Glyph s_r2_glyphs[] = {
     { 0xE116, "DPAD_DOWN", "" },
 };
 static char s_r2_rep3[128][4], s_r2_repf[128][24]; static int s_r2_have[128];
+static char s_r2_xb3[128][4], s_r2_xbf[128][24];     /* the same glyphs as Xbox buttons */
+/* PC port: a PS3 button as the Xbox controller button in the same place
+ * (Cross = A, Circle = B, Square = X, Triangle = Y, L1/R1 = LB/RB, L2/R2 =
+ * LT/RT, Select = View, Start = Menu, L3/R3 = LS/RS): 3-byte and full names. */
+static void r2_xbox_names(const char* pad, char o3[4], char of[24])
+{
+    static const struct { const char* p; const char* s3; const char* f; } t[] = {
+        {"CROSS","[A]","[A]"},{"CIRCLE","[B]","[B]"},{"SQUARE","[X]","[X]"},{"TRIANGLE","[Y]","[Y]"},
+        {"INTERACT","[Y]","[Y]"},{"L1","LB ","[LB]"},{"R1","RB ","[RB]"},{"L2","LT ","[LT]"},{"R2","RT ","[RT]"},
+        {"SELECT","Vw ","[View]"},{"START","Mnu","[Menu]"},{"L3","LS ","[LS]"},{"R3","RS ","[RS]"},
+        {"DPAD_UP","DpU","[D-pad Up]"},{"DPAD_DOWN","DpD","[D-pad Down]"},
+        {"DPAD_LEFT","DpL","[D-pad Left]"},{"DPAD_RIGHT","DpR","[D-pad Right]"},
+    };
+    for (auto& e : t) if (!_stricmp(pad, e.p)) { memcpy(o3, e.s3, 4); snprintf(of, 24, "%s", e.f); return; }
+    memcpy(o3, "[?]", 4); snprintf(of, 24, "[?]");
+}
 static int r2_glyph_at(const uint8_t* q)          /* slot of a mapped glyph at q, or -1 */
 {
     if (q[0] != 0xEE || (q[1] != 0x80 && q[1] != 0x84) || q[2] < 0x80 || q[2] > 0xBF) return -1;
@@ -1573,37 +1744,92 @@ static int r2_key_for(const char* pad, const char* hint, char out3[4], char outf
     key3(k, out3); keyfull(k, outf);
     return 1;
 }
-struct R2RefRec { uint32_t ea, orig, kbm; };
-struct R2ByteRec { uint32_t ea; uint8_t orig[3], kbm[3]; };
-struct R2TextFile { uint32_t base, end; int kbm; std::vector<R2RefRec> refs; std::vector<R2ByteRec> bytes; };
+struct R2RefRec { uint32_t ea, orig, kbm, xb; };
+struct R2ByteRec { uint32_t ea; uint8_t orig[3], kbm[3], xb[3]; };
+struct R2TextFile { uint32_t base, end; int mode; std::vector<R2RefRec> refs; std::vector<R2ByteRec> bytes; };
 static std::mutex s_r2_mu;
 static std::vector<R2TextFile> s_r2_files;
 static volatile int s_r2_mode = -1;                  /* the mode every file is in, -1 = some differ */
-static void r2_apply(R2TextFile& t, int kbm)        /* only where the memory still holds the other version */
+/* mode: 0 PS3 buttons, 1 keys, 2 Xbox buttons. Only where the memory still
+ * holds one of the versions we wrote (the game may have reused it). */
+static void r2_apply(R2TextFile& t, int mode)
 {
-    if (t.kbm == kbm) return;
-    t.kbm = kbm;
+    if (t.mode == mode) return;
+    t.mode = mode;
     if (vm_read32(t.base) != 0x49474857u) return;    /* "IGHW": the file is gone */
-    for (auto& r : t.refs) { const uint32_t cur = vm_read32(r.ea);
-        if (cur == (kbm ? r.orig : r.kbm)) vm_write32(r.ea, kbm ? r.kbm : r.orig); }
-    for (auto& b : t.bytes) { uint8_t* q = vm_base + b.ea;
-        if (!memcmp(q, kbm ? b.orig : b.kbm, 3)) memcpy(q, kbm ? b.kbm : b.orig, 3); }
+    for (auto& r : t.refs) {
+        const uint32_t cur = vm_read32(r.ea), v[3] = { r.orig, r.kbm, r.xb };
+        if (cur != v[mode] && (cur == v[0] || cur == v[1] || cur == v[2])) vm_write32(r.ea, v[mode]); }
+    for (auto& b : t.bytes) {
+        uint8_t* q = vm_base + b.ea; const uint8_t* v[3] = { b.orig, b.kbm, b.xb };
+        if (memcmp(q, v[mode], 3) && (!memcmp(q, v[0], 3) || !memcmp(q, v[1], 3) || !memcmp(q, v[2], 3))) memcpy(q, v[mode], 3); }
 }
-static void r2_icons_mode(int kbm);
-static void r2_input_mode(int kbm)
+static void r2_icons_mode(int mode);
+static void r2_input_mode(int mode)
 {
-    r2_icons_mode(kbm);
-    if (s_r2_mode == kbm) return;
+    if (mode < 0 || mode > 2) mode = 1;
+    r2_icons_mode(mode);
+    if (s_r2_mode == mode) return;
     std::lock_guard<std::mutex> lk(s_r2_mu);
-    for (auto& t : s_r2_files) r2_apply(t, kbm);
-    s_r2_mode = kbm;
+    for (auto& t : s_r2_files) r2_apply(t, mode);
+    s_r2_mode = mode;
 }
-extern "C" void (*volatile g_r2_input_mode_cb)(int kbm);
+extern "C" void (*volatile g_r2_input_mode_cb)(int mode);
+extern "C" volatile int g_port_input_mode;           /* cellPad.c: the current prompt mode */
+/* PC port: console wording in the English text (core_text_tags) -> PC wording,
+ * in place (every replacement is shorter than what it replaces; the rest of
+ * the string's bytes become NULs). Runs on each text file as it is registered,
+ * before the button glyphs are handled. R2_PC_TEXT=0 turns this off. */
+static int r2_pc_text(uint8_t* p, uint32_t end)
+{
+    static int en = -1;
+    if (en < 0) { const char* e = getenv("R2_PC_TEXT"); en = e ? atoi(e) : 1; }
+    if (!en) return 0;
+    static const struct { const char* find; const char* repl; int to_end; } rules[] = {
+        { "shake the wireless controller or the left and right sticks", "shake the mouse or the left and right sticks", 0 },
+        { "Shaking the wireless controller", "Shaking the mouse or the sticks", 0 },
+        { "using the motion sensor function of the wireless controller", "by shaking the mouse or the left and right sticks", 0 },
+        { " or a quick jab with the wireless controller", "", 0 },
+        { "Wireless controller %d has been disconnected.", "Controller %d has been disconnected.", 0 },
+        { "Press and hold the PS button to quit the application.", "Press F10 to quit the game.", 0 },
+        { "Insufficient hard disk space.", "Insufficient disk space.", 0 },
+        { "Your HDD has insufficient space.", "Insufficient disk space.", 0 },
+        { "The HDD access indicator will blink during save operations.",
+          "Do not quit the game or turn off your PC while this indicator is on screen.", 1 },
+        { "Please do not turn off your PLAYSTATION", "Please do not close the game during this time.", 1 },
+        { "sleep with a PS3 controller", "sleep with a controller", 0 },
+    };
+    int n = 0;
+    for (uint32_t i = 1; i < end; i++) {
+        if (p[i - 1] != 0 || p[i] == 0) continue;
+        uint32_t m = 0; while (i + m < end && p[i + m]) m++;
+        if (i + m >= end) break;
+        for (auto& r : rules) {
+            const size_t fl = strlen(r.find), rl = strlen(r.repl);
+            if (fl > m) continue;
+            uint8_t* s = p + i; uint32_t len = m;
+            for (uint32_t k = 0; k + fl <= len; k++) {
+                if (memcmp(s + k, r.find, fl)) continue;
+                const uint32_t tail = r.to_end ? 0 : (uint32_t)(len - k - fl);
+                if (k + rl + tail > len) break;
+                memmove(s + k + rl, s + k + fl, tail);
+                memcpy(s + k, r.repl, rl);
+                memset(s + k + rl + tail, 0, len - (k + rl + tail));
+                len = (uint32_t)(k + rl + tail);
+                n++;
+                break;
+            }
+        }
+        i += m;
+    }
+    if (n) { static int said = 0; if (said++ < 4) fprintf(stderr, "[prompts] text file: %d console wording(s) -> PC wording%c", n, 10); }
+    return n;
+}
 extern "C" void r2_text_patch(uint32_t file_obj)
 {
     static int en = -1;
     if (en < 0) { const char* e = getenv("R2_KEY_PROMPTS"); en = e ? atoi(e) : 1; }
-    if (!en || !file_obj || !vm_base) return;
+    if (!file_obj || !vm_base) return;
     const uint32_t base = vm_read32(file_obj + 4);
     if (!base || vm_read32(base) != 0x49474857u) return;        /* "IGHW" */
     const uint32_t n = vm_read32(base + 8);
@@ -1615,23 +1841,34 @@ extern "C" void r2_text_patch(uint32_t file_obj)
     }
     if (!end || end > (16u << 20)) return;
     std::lock_guard<std::mutex> lk(s_r2_mu);
+    r2_pc_text(vm_base + base, end);   /* idempotent: a file registered again no longer matches */
+    if (!en) return;
     static int init = 0;
     if (!init) { init = 1;
         for (auto& g : s_r2_glyphs) {
             const int i = ((g.cp >> 8) & 1 ? 64 : 0) + (g.cp & 0x3F);
-            if (g.fixed) { memcpy(s_r2_rep3[i], g.fixed, 4); snprintf(s_r2_repf[i], 24, "%s", g.full); s_r2_have[i] = 1; }
-            else {
-                s_r2_have[i] = r2_key_for(g.pad, g.hint, s_r2_rep3[i], s_r2_repf[i]);
-                if (!s_r2_have[i] && !strcmp(g.pad, "INTERACT"))      /* no use key: the Triangle key */
-                    s_r2_have[i] = r2_key_for("TRIANGLE", "", s_r2_rep3[i], s_r2_repf[i]);
-            } }
+            if (g.fixed) {
+                memcpy(s_r2_rep3[i], g.fixed, 4); snprintf(s_r2_repf[i], 24, "%s", g.full);
+                const int right = g.cp == 0xE00E;
+                memcpy(s_r2_xb3[i], right ? "RSt" : "LSt", 4); snprintf(s_r2_xbf[i], 24, right ? "[Right Stick]" : "[Left Stick]");
+            } else {
+                int have = r2_key_for(g.pad, g.hint, s_r2_rep3[i], s_r2_repf[i]);
+                if (!have && !strcmp(g.pad, "INTERACT"))      /* no use key: the Triangle key */
+                    have = r2_key_for("TRIANGLE", "", s_r2_rep3[i], s_r2_repf[i]);
+                if (!have) {                                  /* no key: keep the PS3 icon on keyboard */
+                    const char u[4] = { (char)0xEE, (char)(0x80 | ((g.cp >> 6) & 0x3F)), (char)(0x80 | (g.cp & 0x3F)), 0 };
+                    memcpy(s_r2_rep3[i], u, 4); memcpy(s_r2_repf[i], u, 4);
+                }
+                r2_xbox_names(g.pad, s_r2_xb3[i], s_r2_xbf[i]);
+            }
+            s_r2_have[i] = 1; }
         g_r2_input_mode_cb = r2_input_mode;
     }
     /* the same file registered again: put it back as it was first */
     for (size_t fi = 0; fi < s_r2_files.size(); fi++)
         if (s_r2_files[fi].base == base) { r2_apply(s_r2_files[fi], 0); s_r2_files.erase(s_r2_files.begin() + fi); break; }
-    int kbm = 1;
-    { XINPUT_STATE xs; if (XInputGetState(0, &xs) == ERROR_SUCCESS) kbm = 0; }
+    int kbm = g_port_input_mode;
+    if (kbm < 0 || kbm > 2) kbm = 1;
     uint8_t* p = vm_base + base;
     std::vector<uint32_t> starts;                           /* strings with a glyph */
     for (uint32_t i = 0; i + 2 < end; i++) {
@@ -1642,7 +1879,7 @@ extern "C" void r2_text_patch(uint32_t file_obj)
         while (i < end && p[i]) i++;
     }
     if (starts.empty()) return;
-    R2TextFile tf; tf.base = base; tf.end = end; tf.kbm = 0;
+    R2TextFile tf; tf.base = base; tf.end = end; tf.mode = 0;
     { static int logged_files = 0;
       if (r2_diag() && logged_files++ < 12)
         if (FILE* f = fopen("logs\\prompts_r2.txt", logged_files == 1 ? "w" : "a")) {
@@ -1685,24 +1922,28 @@ extern "C" void r2_text_patch(uint32_t file_obj)
     }
     std::vector<char> relocated(starts.size(), 0);
     if (!refs.empty()) {
-        std::string out; std::vector<uint32_t> at(starts.size(), 0xFFFFFFFFu);
+        std::string out, outx; std::vector<uint32_t> at(starts.size(), 0xFFFFFFFFu), atx(starts.size(), 0);
         for (auto& r : refs) {
             if (at[r.si] != 0xFFFFFFFFu) continue;
             const uint32_t o = starts[r.si];
             size_t m = 0; for (; o + m < end && p[o + m]; m++) {}
-            at[r.si] = (uint32_t)out.size();
+            at[r.si] = (uint32_t)out.size(); atx[r.si] = (uint32_t)outx.size();
             for (size_t i = 0; i < m; i++) {
                 const int k = (i + 2 < m) ? r2_glyph_at(p + o + i) : -1;
-                if (k >= 0) { out += s_r2_repf[k]; i += 2; } else out += (char)p[o + i];
+                if (k >= 0) { out += s_r2_repf[k]; outx += s_r2_xbf[k]; i += 2; }
+                else { out += (char)p[o + i]; outx += (char)p[o + i]; }
             }
-            out += '\0';
+            out += '\0'; outx += '\0';
         }
         const uint32_t blk = ps3_hle_heap_alloc((uint32_t)out.size() + 16);
+        const uint32_t blkx = blk ? ps3_hle_heap_alloc((uint32_t)outx.size() + 16) : 0;
         if (blk) {
             memcpy(vm_base + blk, out.data(), out.size());
+            if (blkx) memcpy(vm_base + blkx, outx.data(), outx.size());
             for (auto& r : refs) {
-                const uint32_t ea = base + r.pos;
-                tf.refs.push_back({ ea, vm_read32(ea), blk + at[r.si] - base - r.rel });
+                const uint32_t ea = base + r.pos, orig = vm_read32(ea);
+                tf.refs.push_back({ ea, orig, blk + at[r.si] - base - r.rel,
+                                    blkx ? blkx + atx[r.si] - base - r.rel : orig });
             }
             for (uint32_t si = 0; si < starts.size(); si++) if (at[si] != 0xFFFFFFFFu) relocated[si] = 1;
         }
@@ -1713,16 +1954,16 @@ extern "C" void r2_text_patch(uint32_t file_obj)
         for (uint32_t i = starts[si]; i + 2 < end && p[i]; i++) {
             const int k = r2_glyph_at(p + i);
             if (k < 0) continue;
-            R2ByteRec b; b.ea = base + i; memcpy(b.orig, p + i, 3); memcpy(b.kbm, s_r2_rep3[k], 3);
+            R2ByteRec b; b.ea = base + i; memcpy(b.orig, p + i, 3); memcpy(b.kbm, s_r2_rep3[k], 3); memcpy(b.xb, s_r2_xb3[k], 3);
             tf.bytes.push_back(b); i += 2;
         }
     }
     r2_apply(tf, kbm);
     static int logged = 0;
     if (logged++ < 8)
-        fprintf(stderr, "[prompts] text file 0x%08X: %zu string(s), %zu table reference(s) to full key names, "
+        fprintf(stderr, "[prompts] text file 0x%08X: %zu string(s), %zu table reference(s) to full names, "
                 "%zu icon(s) as short names, showing %s%c", base, starts.size(), tf.refs.size(), tf.bytes.size(),
-                kbm ? "keys" : "PS3 buttons", 10);
+                kbm == 1 ? "keys" : kbm == 2 ? "Xbox buttons" : "PS3 buttons", 10);
     s_r2_files.push_back(std::move(tf));
     if (s_r2_mode != kbm) s_r2_mode = -1;
 }
@@ -1735,16 +1976,17 @@ extern "C" void r2_text_patch(uint32_t file_obj)
  * top of func_007675D8 (tools/hooks/r2.json) points every "button X" name at a
  * linear A8R8G8B8 copy of the icon in a 1 MB block of guest memory we map for
  * the RSX (cellGcmMapMainMemory). That copy holds the game's icon (decoded)
- * while a controller is connected and a keycap with the key bound in
- * controls.txt otherwise, rewritten in place when a controller is plugged in or
- * out (g_r2_input_mode_cb; the RSX texture cache sees the write through its
- * page protection). An icon whose format can't be decoded is only replaced
- * when no controller is connected at registration. R2_KEY_PROMPTS=0 turns
+ * for a PlayStation controller, a keycap with the key bound in controls.txt
+ * on keyboard, or the port's own Xbox-style button (a letter in a coloured
+ * circle, drawn here) for any other controller, rewritten in place when the
+ * last used device changes (g_r2_input_mode_cb; the RSX texture cache sees
+ * the write through its page protection). An icon whose format can't be
+ * decoded can't go back to the PS3 icon once replaced. R2_KEY_PROMPTS=0 turns
  * this off too. */
 #pragma comment(lib, "gdi32.lib")
 extern "C" int32_t cellGcmMapMainMemory(uint32_t ea, uint32_t size, uint32_t* offset);
 extern "C" uint32_t cellGcmResolveLocated(int local, uint32_t offset);
-struct R2Icon { std::string name; uint32_t src, ea, hdr; int w, h, live; std::vector<uint8_t> pad, key; };
+struct R2Icon { std::string name; uint32_t src, ea, hdr; int w, h, live; std::vector<uint8_t> pad, key, xb; };
 static std::mutex s_icon_mu;
 static std::vector<R2Icon> s_icons;
 static uint32_t s_icon_blk = 0, s_icon_io = 0, s_icon_used = 0;
@@ -1773,8 +2015,11 @@ static void r2_icon_label(const char* k, char out[16])
     out[0] = (char)toupper((unsigned char)out[0]);
 }
 /* A keycap: dark rounded key, light rim, the label in white, drawn 4x and
- * averaged down. Out: w*h pixels, A R G B bytes (a big-endian A8R8G8B8 word). */
-static void r2_icon_render(const char* label, int w, int h, uint8_t* out)
+ * averaged down. Out: w*h pixels, A R G B bytes (a big-endian A8R8G8B8 word).
+ * round = 1: a round button of colour body (0xRRGGBB) with a darker rim and
+ * the label in ink -- the PC port's own Xbox-style face buttons. */
+static void r2_icon_render(const char* label, int w, int h, uint8_t* out,
+                           int round = 0, uint32_t body = 0x1C1C1C, uint32_t ink = 0xFFFFFF)
 {
     const int S = 4, W = w * S, H = h * S;
     std::vector<float> cov((size_t)w * h, 0.0f);
@@ -1785,7 +2030,8 @@ static void r2_icon_render(const char* label, int w, int h, uint8_t* out)
     void* bits = nullptr;
     HBITMAP bm = dc ? CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, NULL, 0) : NULL;
     const float m = (float)(w < h ? w : h);
-    const float inset = m * 0.05f + 0.5f, rim = m * 0.08f > 1.0f ? m * 0.08f : 1.0f, rad = m * 0.22f;
+    const float inset = m * 0.05f + 0.5f, rim = m * 0.08f > 1.0f ? m * 0.08f : 1.0f;
+    const float rad = round ? m * 0.5f - inset : m * 0.22f;
     if (bm && bits) {
         HGDIOBJ obm = SelectObject(dc, bm);
         memset(bits, 0, (size_t)W * H * 4);
@@ -1814,19 +2060,28 @@ static void r2_icon_render(const char* label, int w, int h, uint8_t* out)
     }
     if (bm) DeleteObject(bm);
     if (dc) DeleteDC(dc);
-    const float cx = w * 0.5f, cy = h * 0.5f, hx = w * 0.5f - inset, hy = h * 0.5f - inset;
+    const float cx = w * 0.5f, cy = h * 0.5f;
+    const float hx = round ? rad : w * 0.5f - inset, hy = round ? rad : h * 0.5f - inset;
+    const float bc[3] = { (float)((body >> 16) & 255), (float)((body >> 8) & 255), (float)(body & 255) };
+    const float ic[3] = { (float)((ink >> 16) & 255), (float)((ink >> 8) & 255), (float)(ink & 255) };
     for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
         const float qx = fabsf(x + 0.5f - cx) - (hx - rad), qy = fabsf(y + 0.5f - cy) - (hy - rad);
         const float ox = qx > 0 ? qx : 0, oy = qy > 0 ? qy : 0, mx = qx > qy ? qx : qy;
         const float d = sqrtf(ox * ox + oy * oy) + (mx < 0 ? mx : 0) - rad;   /* < 0 inside the key */
         auto cl = [](float v) { return v < 0 ? 0.0f : v > 1 ? 1.0f : v; };
         const float outer = cl(0.5f - d), inner = cl(0.5f - (d + rim));
-        float a = outer * 0.94f, c = inner * 28.0f + (outer - inner) * 225.0f;   /* body / rim grey */
-        c = outer > 0 ? c / outer : 0;
+        const float a0 = outer * (round ? 1.0f : 0.94f);
         const float t = cl(cov[(size_t)y * w + x]) * inner;
-        c = c * (1 - t) + 255.0f * t; a = a > t ? a : t;
+        const float a = a0 > t ? a0 : t;
         uint8_t* o = out + ((size_t)y * w + x) * 4;
-        o[0] = (uint8_t)(a * 255.0f + 0.5f); o[1] = o[2] = o[3] = (uint8_t)(c + 0.5f);
+        o[0] = (uint8_t)(a * 255.0f + 0.5f);
+        for (int ch = 0; ch < 3; ch++) {
+            const float rimc = round ? bc[ch] * 0.55f : 225.0f;      /* keycap: light grey rim */
+            float c = inner * bc[ch] + (outer - inner) * rimc;       /* body / rim */
+            c = outer > 0 ? c / outer : 0;
+            c = c * (1 - t) + ic[ch] * t;
+            o[1 + ch] = (uint8_t)(c + 0.5f);
+        }
     }
 }
 /* the game's icon as A R G B bytes; 0 for a format we don't decode */
@@ -1887,18 +2142,21 @@ static int r2_icon_decode(int fmt, int lin, uint32_t src, uint32_t pitch, int w,
     }
     return 1;
 }
-static void r2_icons_apply(int kbm)                  /* s_icon_mu held */
+static void r2_icons_apply(int mode)                 /* s_icon_mu held */
 {
-    for (auto& ic : s_icons)
-        if (ic.live && ic.ea) memcpy(vm_base + ic.ea, kbm ? ic.key.data() : ic.pad.data(), ic.key.size());
+    for (auto& ic : s_icons) {
+        if (!ic.ea || !ic.hdr) continue;
+        if (mode == 0) { if (ic.live) memcpy(vm_base + ic.ea, ic.pad.data(), ic.pad.size()); }
+        else memcpy(vm_base + ic.ea, mode == 2 ? ic.xb.data() : ic.key.data(), ic.key.size());
+    }
 }
-static void r2_icons_mode(int kbm)
+static void r2_icons_mode(int mode)
 {
-    if (s_icon_mode == kbm) return;
+    if (s_icon_mode == mode) return;
     std::lock_guard<std::mutex> lk(s_icon_mu);
-    if (s_icon_mode == kbm) return;
-    r2_icons_apply(kbm);
-    s_icon_mode = kbm;
+    if (s_icon_mode == mode) return;
+    r2_icons_apply(mode);
+    s_icon_mode = mode;
 }
 static uint32_t r2_icon_alloc(uint32_t bytes)        /* in the RSX-mapped block, 128-byte aligned */
 {
@@ -1934,8 +2192,8 @@ extern "C" void r2_menu_icon(ppu_context* ctx)
     const int w = (int)(wh >> 16), h = (int)(wh & 0xFFFF);
     if (w <= 0 || h <= 0 || w > 256 || h > 256) return;
     std::lock_guard<std::mutex> lk(s_icon_mu);
-    int kbm = 1;
-    { XINPUT_STATE xs; if (XInputGetState(0, &xs) == ERROR_SUCCESS) kbm = 0; }
+    int kbm = g_port_input_mode;
+    if (kbm < 0 || kbm > 2) kbm = 1;
     if (s_icon_mode < 0) s_icon_mode = kbm;
     kbm = s_icon_mode;
     R2Icon* ic = nullptr;
@@ -1943,12 +2201,18 @@ extern "C" void r2_menu_icon(ppu_context* ctx)
     if (!ic) {
         R2Icon e; e.name = name; e.src = hdr; e.w = w; e.h = h; e.live = 0; e.ea = 0; e.hdr = 0;
         char key[64] = "", label[16] = "";
-        if (!r2_bound_key(pad, hint, key)) {
-            fprintf(stderr, "[prompts] menu icon '%s': no key bound to %s, keeping the PS3 icon%c", name, pad, 10);
-            return; }
-        r2_icon_label(key, label);
-        e.key.resize((size_t)w * h * 4); e.pad.resize(e.key.size());
-        r2_icon_render(label, w, h, e.key.data());
+        const int bound = r2_bound_key(pad, hint, key);
+        if (!bound) fprintf(stderr, "[prompts] menu icon '%s': no key bound to %s, keeping the PS3 icon on keyboard%c", name, pad, 10);
+        else r2_icon_label(key, label);
+        e.key.resize((size_t)w * h * 4); e.pad.resize(e.key.size()); e.xb.resize(e.key.size());
+        if (bound) r2_icon_render(label, w, h, e.key.data());
+        /* Xbox-style button: original art -- a letter in a coloured circle, or a word on a dark key */
+        { static const struct { const char* pad; const char* lb; int round; uint32_t body, ink; } xt[] = {
+              { "CROSS", "A", 1, 0x3C9A2E, 0xFFFFFF }, { "CIRCLE", "B", 1, 0xC8312B, 0xFFFFFF },
+              { "SQUARE", "X", 1, 0x2B62C8, 0xFFFFFF }, { "TRIANGLE", "Y", 1, 0xE0B21F, 0x202020 },
+              { "START", "Menu", 0, 0x1C1C1C, 0xFFFFFF }, { "SELECT", "View", 0, 0x1C1C1C, 0xFFFFFF },
+              { "L3", "LS", 1, 0x303030, 0xFFFFFF }, { "R3", "RS", 1, 0x303030, 0xFFFFFF } };
+          for (auto& x : xt) if (!strcmp(x.pad, pad)) r2_icon_render(x.lb, w, h, e.xb.data(), x.round, x.body, x.ink); }
         static const int fmts[8] = { 0x81, 0, 0, 0, 0x85, 0x86, 0x87, 0x88 };
         const int fi = (int)((flags >> 8) & 0x1F) - 1, fmt = fi >= 0 && fi < 8 ? fmts[fi] : 0;
         const uint32_t src = cellGcmResolveLocated(((flags >> 1) & 1) == 0, vm_read32(hdr));
@@ -1970,10 +2234,13 @@ extern "C" void r2_menu_icon(ppu_context* ctx)
         }
         fprintf(stderr, "[prompts] menu icon '%s' %dx%d fmt 0x%02X remap 0x%X -> key '%s'%s%c", name, w, h, fmt, vm_read32(hdr + 0x10), label,
                 !e.hdr ? " (no texture memory: PS3 icon)" : ok ? "" : " (icon not decoded: no live switch)", 10);
+        if (!bound) e.key = ok ? e.pad : e.xb;
         s_icons.push_back(std::move(e));
         ic = &s_icons.back();
-        if (ic->live) memcpy(vm_base + ic->ea, kbm ? ic->key.data() : ic->pad.data(), ic->key.size());
-        else if (ic->hdr) memcpy(vm_base + ic->ea, ic->key.data(), ic->key.size());
+        if (ic->hdr) {
+            const uint8_t* img = kbm == 1 ? ic->key.data() : kbm == 2 ? ic->xb.data() : ic->live ? ic->pad.data() : ic->key.data();
+            memcpy(vm_base + ic->ea, img, ic->key.size());
+        }
         g_r2_input_mode_cb = r2_input_mode;
     }
     if (ic->hdr && (ic->live || kbm)) ctx->gpr[4] = ic->hdr;
@@ -2421,7 +2688,8 @@ extern "C" void ps3_load_prx_modules(void)
       { const char* mc = getenv("PORT_MAIN_CORE");
         if (!mc || atoi(mc)) CreateThread(NULL, 0, main_core_keeper, NULL, 0, NULL); }
       if (dp && *dp) { snprintf(dbgpath, sizeof dbgpath, "%s", dp);
-                       CreateThread(NULL, 0, debug_console, dbgpath, 0, NULL); } }
+                       CreateThread(NULL, 0, debug_console, dbgpath, 0, NULL); }
+      thrcpu_start(); }
     if (getenv("WATCHDOG_AT")) CreateThread(NULL, 0, hang_watchdog, NULL, 0, NULL);
     if (getenv("FREEZE_RELAUNCH")) CreateThread(NULL, 0, freeze_relauncher, NULL, 0, NULL);
     CreateThread(NULL, 0, movie_watchdog, NULL, 0, NULL);   /* v126: logs\\moviehang_*.txt */
@@ -2492,5 +2760,15 @@ extern "C" void ps3_load_prx_modules(void)
    with no limit. With spare cores that is harmless; on a 4-core CPU it holds the core the SPU
    worker it waits on needs. Offer the core to any ready thread (returns at once if none). */
 extern "C" int ps3_host_prio_boost(void);
-extern "C" void r2_spin_relax(void) { static const bool low = !ps3_host_prio_boost(); if (low) SwitchToThread(); }
+/* On many-core hosts the loop used to be a bare load-compare-branch. One PAUSE per lap
+   frees the shared core for its SMT sibling, which on a 6c/12t CPU is often an SPU
+   worker. The SPU's store still shows up within one lap of about 50 ns. R2_SPIN_PAUSE=0
+   restores the bare loop. */
+extern "C" void r2_spin_relax(void)
+{
+    static const bool low = !ps3_host_prio_boost();
+    static const bool pause = [] { const char* e = getenv("R2_SPIN_PAUSE"); return !e || atoi(e) != 0; }();
+    if (low) SwitchToThread();
+    else if (pause) YieldProcessor();
+}
 

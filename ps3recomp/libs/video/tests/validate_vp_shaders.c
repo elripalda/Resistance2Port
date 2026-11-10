@@ -20,6 +20,11 @@ static char hlsl[160 * 1024];
 int main(int argc, char** argv)
 {
     if (argc < 2) { printf("usage: %s <dir-of-.vp>\n", argv[0]); return 2; }
+    /* Mode 0: the CPU-decoded inputs; then the GPU vertex fetch forms
+     * (rsx_vp_set_gpu_fetch): ByteAddressBuffer and Buffer<uint> streams. */
+    int bad = 0;
+    for (int mode = RSX_VP_FETCH_OFF; mode <= RSX_VP_FETCH_TEXEL; mode++) {
+    rsx_vp_set_gpu_fetch(mode);
     DIR* d = opendir(argv[1]);
     if (!d) { printf("cannot open %s\n", argv[1]); return 1; }
 
@@ -59,7 +64,7 @@ int main(int argc, char** argv)
     }
     closedir(d);
 
-    printf("=== vertex-program corpus: %s ===\n", argv[1]);
+    printf("=== vertex-program corpus: %s (gpu fetch mode %d) ===\n", argv[1], mode);
     printf("total .vp      : %d\n", total);
     printf("decoded        : %d  (%.1f%%)\n", decoded, total?100.0*decoded/total:0);
     printf("decode errors  : %d\n", decode_err);
@@ -67,5 +72,8 @@ int main(int argc, char** argv)
     printf("D3DCompile OK  : %d  (%.1f%%)\n", compiled, total?100.0*compiled/total:0);
     printf("D3DCompile FAIL: %d\n", fail);
 #endif
-    return 0;
+    if (total == 0 || decode_err || fail) bad = 1;
+    }
+    rsx_vp_set_gpu_fetch(RSX_VP_FETCH_OFF);
+    return bad;
 }

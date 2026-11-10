@@ -86,6 +86,8 @@ message(STATUS "Lifted sources:  ${RECOMP_SOURCE_COUNT} file(s)")
 # input) is linked from build_rpcs3 below; the runtime only needs headers.
 if(WIN32 AND EXISTS "${CMAKE_SOURCE_DIR}/../build_rpcs3/rpcs3_rsx.lib")
     set(PS3RECOMP_RSX_VULKAN ON CACHE BOOL "" FORCE)
+    # FSR 3.1 (RSX_FSR=3): FidelityFX SDK 1.1.4 headers; build.bat copies the DLL.
+    set(PS3RECOMP_FFX_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/../tools/ffx_vk/include" CACHE PATH "" FORCE)
     set(PS3RECOMP_GLSLANG_INCLUDE_DIR
         "${PS3RECOMP_DIR}/third_party/rpcs3/3rdparty/glslang/glslang"
         "${PS3RECOMP_DIR}/third_party/rpcs3/3rdparty/glslang"
@@ -192,6 +194,12 @@ endif()
 add_executable(${PROJECT_NAME}
     main.cpp
     stubs.cpp
+    r2_native_aa.cpp
+    r2_pcport.cpp
+    r2_patches.cpp
+    r2_pcfeat.cpp
+    r2_trophies.cpp
+    r2_mods.cpp
     ${PS3RECOMP_SCAFFOLD}
     ${HLE_NID_TABLE}
     ${RECOMP_SOURCES}

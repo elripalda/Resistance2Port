@@ -42,6 +42,8 @@ file(GLOB_RECURSE HLE_SOURCES
     "runtime/diag/*.c"      # yz_frontier_trace, used by the live draw engine
 )
 # Exclude test harnesses (e.g. libs/video/tests/*): they define their own main().
+# (libs/video/rsx_vk_shaderdb.c is the pipeline database; its merge tool's
+# main() is behind RSX_SDB_TOOL, see scratch/shaderdb_merge.ps1.)
 list(FILTER HLE_SOURCES EXCLUDE REGEX "/tests/")
 
 # The Vulkan RSX backend is opt-in while it grows (stage V0: clear + present).
@@ -49,6 +51,8 @@ list(FILTER HLE_SOURCES EXCLUDE REGEX "/tests/")
 # no target-architecture libvulkan, which keeps cross-compiling simple.
 option(PS3RECOMP_RSX_VULKAN "Build the Vulkan RSX backend (Linux, Windows)" OFF)
 list(FILTER HLE_SOURCES EXCLUDE REGEX "rsx_vulkan_backend\\.c$")
+list(FILTER HLE_SOURCES EXCLUDE REGEX "rsx_vk_fsr3\\.cpp$")
+list(FILTER HLE_SOURCES EXCLUDE REGEX "rsx_vk_upscale\\.c$")
 if(PS3RECOMP_RSX_VULKAN)
     if(APPLE)
         message(FATAL_ERROR "PS3RECOMP_RSX_VULKAN is not available on Apple platforms")
@@ -67,6 +71,10 @@ if(PS3RECOMP_RSX_VULKAN)
             "-DPS3RECOMP_VULKAN_INCLUDE_DIR=<dir containing vulkan/vulkan.h>")
     endif()
     list(APPEND HLE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/rsx_vulkan_backend.c")
+    # AMD FSR 3.1 for the temporal-upscaler slot (runtime-loaded FidelityFX API).
+    list(APPEND HLE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/rsx_vk_fsr3.cpp")
+    # DLSS (a port's NGX bridge DLL, rsx_vk_dlss_api.h) -> FSR 3.1 selection for that slot.
+    list(APPEND HLE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/rsx_vk_upscale.c")
     # HLSL -> SPIR-V for guest programs: a stub unless glslang is found below.
     list(APPEND HLE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/rsx_shader_spirv.cpp")
 endif()
@@ -189,6 +197,15 @@ if(PS3RECOMP_RSX_VULKAN)
     target_compile_definitions(ps3recomp_runtime PUBLIC PS3RECOMP_RSX_VULKAN)
     target_link_libraries(ps3recomp_runtime PUBLIC ${CMAKE_DL_LIBS})
     message(STATUS "  Vulkan:       RSX backend enabled (rsx_vulkan_backend.c, headers in ${PS3RECOMP_VULKAN_INCLUDE_DIR})")
+    # FidelityFX API headers (FidelityFX SDK 1.1.x: ffx_api/ffx_api.h, ...):
+    # enables FSR 3.1 in rsx_vk_fsr3.cpp; amd_fidelityfx_vk.dll is loaded at run time.
+    set(PS3RECOMP_FFX_INCLUDE_DIR "" CACHE PATH "directory containing ffx_api/ffx_api.h (optional)")
+    if(WIN32 AND PS3RECOMP_FFX_INCLUDE_DIR AND EXISTS "${PS3RECOMP_FFX_INCLUDE_DIR}/ffx_api/ffx_api.h")
+        set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/libs/video/rsx_vk_fsr3.cpp" PROPERTIES
+            INCLUDE_DIRECTORIES "${PS3RECOMP_FFX_INCLUDE_DIR}"
+            COMPILE_DEFINITIONS PS3RECOMP_HAVE_FFX)
+        message(STATUS "  Vulkan:       FSR 3.1 available (FidelityFX API headers in ${PS3RECOMP_FFX_INCLUDE_DIR})")
+    endif()
 endif()
 
 # cellVdec decodes H.264 / MPEG-2 through FFmpeg when this is on. libavcodec

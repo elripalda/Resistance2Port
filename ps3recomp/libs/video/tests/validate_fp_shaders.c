@@ -40,6 +40,54 @@ static int   op_unhandled[64];   /* per-opcode count of files where it was unhan
 
 static u8  filebuf[64 * 1024];
 static char hlsl[128 * 1024];
+static char hlsl_bank[256 * 1024];
+
+/* FP9: the engine form with every dynamic option on, without and with
+ * rsx_fp_set_bindless, under two cube/volume unit assignments. The bindless
+ * text must sample the same units, keep no bank reference, and compile as
+ * ps_5_1 (descriptor arrays in register spaces). */
+static int bl_total, bl_fail, bl_shown;
+static void check_bindless(const char* name, const u8* uc, u32 size)
+{
+    static const u32 masks[2][2] = { { 0u, 0u }, { 0x5555u, 0x2222u } };
+    const u8 zero16[16] = { 0 };
+    rsx_fp_frag_state fs; memset(&fs, 0, sizeof fs);
+    rsx_fp_set_dynamic_texparam(1); rsx_fp_set_dynamic_rop(1); rsx_fp_set_res_scale_dynamic(1);
+    for (int v = 0; v < 2; v++) {
+        u32 nc = 0;
+        rsx_fp_set_bindless(0);
+        int r0 = rsx_fp_decompile_engine(uc, size, 0, masks[v][0], masks[v][1], NULL, zero16, zero16,
+                                         &fs, hlsl_bank, (u32)sizeof hlsl_bank, &nc);
+        rsx_fp_set_bindless(1);
+        int r1 = rsx_fp_decompile_engine(uc, size, 0, masks[v][0], masks[v][1], NULL, zero16, zero16,
+                                         &fs, hlsl, (u32)sizeof hlsl, &nc);
+        rsx_fp_set_bindless(0);
+        if (r0 < 0) continue;
+        bl_total++;
+        const char* why = NULL;
+        if (r1 != r0) why = "decompile result differs";
+        else if (rsx_fp_apply_unnorm_scale_dyn(hlsl, (u32)sizeof hlsl, 0xFFFFu, masks[v][0]) < 0 ||
+                 rsx_fp_apply_unnorm_scale_dyn(hlsl_bank, (u32)sizeof hlsl_bank, 0xFFFFu, masks[v][0]) < 0)
+            why = "texparam patch failed";
+        else if (strstr(hlsl, "rsx_samp[") || strstr(hlsl, "rsx_tex[")) why = "bank reference left";
+        else if (rsx_fp_sampled_units(hlsl) != rsx_fp_sampled_units(hlsl_bank)) why = "sampled units differ";
+        else if (strstr(hlsl_bank, "_rsx_txf") && !strstr(hlsl, "_rsx_txf")) why = "texparam sites lost";
+#ifdef _WIN32
+        if (!why) {
+            ID3DBlob* code = NULL; ID3DBlob* err = NULL;
+            HRESULT hr = D3DCompile(hlsl, strlen(hlsl), name, NULL, NULL, "main", "ps_5_1", 0, 0, &code, &err);
+            if (FAILED(hr)) why = err ? (const char*)err->lpVtbl->GetBufferPointer(err) : "D3DCompile";
+            if (code) code->lpVtbl->Release(code);
+            if (why && bl_shown < 4) printf("  [bindless FAIL] %s v%d: %s\n", name, v, why);
+            if (err) err->lpVtbl->Release(err);
+            if (why) { bl_fail++; bl_shown++; }
+            continue;
+        }
+#endif
+        if (why) { bl_fail++; if (bl_shown++ < 4) printf("  [bindless FAIL] %s v%d: %s\n", name, v, why); }
+    }
+    rsx_fp_set_dynamic_texparam(0); rsx_fp_set_dynamic_rop(0); rsx_fp_set_res_scale_dynamic(0);
+}
 
 static long read_file(const char* path, u8* buf, long cap)
 {
@@ -96,7 +144,8 @@ int main(int argc, char** argv)
         if (size == 0) { no_end++; size = (u32)n; }
         tally_opcodes(filebuf, size);
 
-        int instrs = rsx_fp_decompile(filebuf, size, hlsl, sizeof(hlsl), 0);
+        check_bindless(name, filebuf, size);
+        int instrs = rsx_fp_decompile(filebuf, size, 0, hlsl, (u32)sizeof(hlsl));
         if (instrs < 0) { decode_err++; continue; }
 
         /* Scan for unhandled-opcode markers the decompiler emits. */
@@ -150,6 +199,8 @@ int main(int argc, char** argv)
     printf("D3DCompile FAIL  : %d\n", compile_fail);
 #endif
 
+    printf("bindless (ps_5_1): %d/%d OK\n", bl_total - bl_fail, bl_total);
+
     printf("\n=== opcode histogram (count / unhandled-files) ===\n");
     for (int op = 0; op < 64; op++) {
         if (op_count[op] == 0) continue;
@@ -157,5 +208,8 @@ int main(int argc, char** argv)
         printf("  %-8s (0x%02X): %5d%s\n", nm, op, op_count[op],
                op_unhandled[op] ? "   <-- UNHANDLED" : "");
     }
-    return 0;
+    /* Unhandled-op files are reported, not failed: RPCS3's cache stores ucode
+     * from program_start_offset, so a leading NOP's literal can become the
+     * first slot (RPCS3 logs it as an illegal instruction too). */
+    return (total == 0 || decode_err || compile_fail || bl_fail || !bl_total) ? 1 : 0;
 }

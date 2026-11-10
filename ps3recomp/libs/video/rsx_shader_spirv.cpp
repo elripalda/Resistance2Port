@@ -10,8 +10,10 @@
  *   - Vulkan 1.0 client, SPIR-V 1.0: the backend creates a 1.0 instance and
  *     promises to run on 1.0-level drivers. (The MSL path targets 1.3 because
  *     that is spirv-cross's floor, not a driver's.)
- *   - Texture and sampler registers are shifted apart (setShiftBinding),
- *     because Vulkan has one binding namespace per set.
+ *   - Texture and sampler registers are shifted apart in set 0
+ *     (setShiftBindingForSet), because Vulkan has one binding namespace per
+ *     set. Sets 1 and 2 (the optional bindless / vertex-fetch resources)
+ *     keep their explicit bindings.
  *   - The vertex stage flips Y (setInvertY): D3D clip space is +y up.
  *
  * Translations are cached. glslang takes 20-150 ms per shader, on the thread
@@ -52,9 +54,13 @@ void put_log(char* log, u32 log_size, const char* what, const char* detail)
              (what && detail && *detail) ? ": " : "", detail ? detail : "");
 }
 
+/* RPCS3 spirv::initialize_compiler_context: every compiler thread (the FIFO
+ * thread and the Vulkan backend's pipeline workers) initialises glslang
+ * itself; InitializeProcess is reference counted and internally locked, and
+ * a TShader/TProgram per call keeps translations independent. */
 bool glslang_ready()
 {
-    static bool inited = false;
+    static thread_local bool inited = false;
     if (!inited) {
         if (!glslang::InitializeProcess()) return false;
         inited = true;
@@ -87,8 +93,11 @@ int translate(const char* hlsl, int stage, std::vector<unsigned int>& spirv,
     shader.setEntryPoint("main");
     shader.setAutoMapBindings(true);
     shader.setAutoMapLocations(true);
-    shader.setShiftBinding(glslang::EResTexture, RSX_SPIRV_TEXTURE_BINDING);
-    shader.setShiftBinding(glslang::EResSampler, RSX_SPIRV_SAMPLER_BINDING);
+    /* The shifts apply to set 0 only. Sets 1 (bindless arrays) and 2 (vertex
+     * fetch streams) carry explicit [[vk::binding]]s that must not move, and
+     * glslang ignores a per-set shift of 0, so the set-0 shift is per set. */
+    shader.setShiftBindingForSet(glslang::EResTexture, RSX_SPIRV_TEXTURE_BINDING, 0);
+    shader.setShiftBindingForSet(glslang::EResSampler, RSX_SPIRV_SAMPLER_BINDING, 0);
     if (lang == EShLangVertex) shader.setInvertY(true);
 
     if (!shader.parse(GetDefaultResources(), 100, false, msgs)) {
@@ -113,6 +122,43 @@ int translate(const char* hlsl, int stage, std::vector<unsigned int>& spirv,
     if (spirv.empty()) {
         put_log(log, log_size, "SPIR-V generation", logger.getAllMessages().c_str());
         return -1;
+    }
+    /* RPCS3 _FORCE_POSITION_INVARIANCE (Shader Precision High+): the
+     * position is Invariant, so passes drawing the same geometry through
+     * different vertex programs (a depth pre-pass, then depth-EQUAL) land on
+     * the same depth. HLSL cannot say it; decorate the BuiltIn Position. */
+    if (lang == EShLangVertex) {
+        for (size_t i = 5; i < spirv.size(); ) {
+            const unsigned w = spirv[i], op = w & 0xFFFFu, n = w >> 16;
+            if (!n || i + n > spirv.size()) break;
+            if (op == 71u && n == 4u && spirv[i + 2] == 11u && spirv[i + 3] == 0u) {
+                const unsigned d[3] = { (3u << 16) | 71u, spirv[i + 1], 18u };
+                spirv.insert(spirv.begin() + (std::ptrdiff_t)(i + n), d, d + 3);
+                break;
+            }
+            if (op == 72u && n == 5u && spirv[i + 3] == 11u && spirv[i + 4] == 0u) {
+                const unsigned d[4] = { (4u << 16) | 72u, spirv[i + 1], spirv[i + 2], 18u };
+                spirv.insert(spirv.begin() + (std::ptrdiff_t)(i + n), d, d + 4);
+                break;
+            }
+            i += n;
+        }
+    }
+    /* Point sprites (RSX_SPIRV_POINTCOORD_LOCATION): the input at that
+     * location becomes BuiltIn PointCoord. OpDecorate Location and OpDecorate
+     * BuiltIn are both four words, so the rewrite is in place. Fragment
+     * outputs never reach the location (four colour targets at most). */
+    if (lang == EShLangFragment) {
+        for (size_t i = 5; i < spirv.size(); ) {
+            const unsigned w = spirv[i], op = w & 0xFFFFu, n = w >> 16;
+            if (!n || i + n > spirv.size()) break;
+            if (op == 71u && n == 4u && spirv[i + 2] == 30u &&
+                spirv[i + 3] == RSX_SPIRV_POINTCOORD_LOCATION) {
+                spirv[i + 2] = 11u;     /* BuiltIn */
+                spirv[i + 3] = 16u;     /* PointCoord */
+            }
+            i += n;
+        }
     }
     return 0;
 }
@@ -242,28 +288,39 @@ extern "C" int rsx_hlsl_to_spirv(const char* hlsl, int stage,
         return -1;
     }
 
-    /* One lock around the whole lookup and translation: glslang's process
-     * state is not documented as thread-safe either. */
+    /* The lock covers the lookup and the insert only, so pipeline workers
+     * translate in parallel (RPCS3's async recompiler); two threads asking
+     * for the same text at once may both translate it, and the first insert
+     * wins. */
     Cache& c = cache();
-    std::lock_guard<std::mutex> guard(c.lock);
     const std::string key = cache_key(hlsl, stage);
-    auto it = c.map.find(key);
-    if (it != c.map.end()) {
-        c.stats.memory_hits++;
-    } else {
-        std::vector<unsigned int> spirv;
-        const std::string& dir = cache_dir(c);
-        const std::string path = dir.empty() ? std::string() : cache_path(dir, key);
-        if (!dir.empty() && cache_load(path, key, spirv)) {
-            c.stats.disk_hits++;
+    std::vector<unsigned int> found;
+    bool hit = false;
+    std::string dir;
+    {
+        std::lock_guard<std::mutex> guard(c.lock);
+        auto it = c.map.find(key);
+        if (it != c.map.end()) {
+            c.stats.memory_hits++;
+            found = it->second;
+            hit = true;
         } else {
-            if (translate(hlsl, stage, spirv, log, log_size)) return -1;
-            c.stats.translations++;
-            if (!dir.empty()) cache_store(path, key, spirv);
+            dir = cache_dir(c);
         }
-        it = c.map.emplace(key, std::move(spirv)).first;
     }
-    const std::vector<unsigned int>& spirv = it->second;
+    if (!hit) {
+        const std::string path = dir.empty() ? std::string() : cache_path(dir, key);
+        const bool disk = !dir.empty() && cache_load(path, key, found);
+        if (!disk) {
+            if (translate(hlsl, stage, found, log, log_size)) return -1;
+            if (!dir.empty()) cache_store(path, key, found);
+        }
+        std::lock_guard<std::mutex> guard(c.lock);
+        if (disk) c.stats.disk_hits++;
+        else c.stats.translations++;
+        c.map.emplace(key, found);
+    }
+    const std::vector<unsigned int>& spirv = found;
     if (spirv.size() > max_words) {
         char n[64];
         snprintf(n, sizeof n, "%zu words, room for %u", spirv.size(), max_words);

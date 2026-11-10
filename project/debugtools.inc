@@ -540,6 +540,249 @@ static void dbg_prof_frame_threads(unsigned sec)
     dbg_prof_multi(t, nm, 8, sec);
 }
 
+/* ===========================================================================
+ * [thrcpu] per-host-thread CPU accounting.
+ *
+ * The sampling profiler above says WHERE eight chosen threads spend their
+ * time; it cannot say which of the process's ~60 host threads are saturated,
+ * or whether a "busy" thread is computing or spin-waiting. This does: every
+ * PS3_THREAD_CPU seconds (default 5, 0 = off) one [thrcpu] line on stderr
+ * with the busiest threads, and the full table in every F11 profile.
+ *
+ *   busy  = QueryThreadCycleTime delta / rdtsc delta (precise, includes
+ *           spinning); usr/krn from the kernel's per-thread times;
+ *   cs/s  = context switches per second (a SwitchToThread spin shows here);
+ *   spin  = share of wall time in sys_timer_usleep < 1 ms (QPC busy-wait),
+ *   slp   = in usleep >= 1 ms, yld/s = sys_ppu_thread_yield calls,
+ *   lwm   = blocked in a contended sys_lwmutex_lock, lwc = in sys_lwcond_wait,
+ *   early = short usleeps ended by ps3_guest_mem_notify.
+ * One NtQuerySystemInformation call per sample plus a cached handle per
+ * thread: no cost to the game threads. */
+#include "ps3_waitstat.h"
+#include <intrin.h>   /* __rdtsc */
+extern "C" const char* ppu_name_by_host_tid(unsigned long tid);
+struct thr_spi_thread {             /* SYSTEM_THREAD_INFORMATION, x64 */
+    LARGE_INTEGER kt, ut, ct; ULONG wait_time; PVOID start;
+    HANDLE pid, tid; LONG prio, base_prio; ULONG cs, state, wait_reason;
+};
+static_assert(sizeof(thr_spi_thread) == 0x50, "SYSTEM_THREAD_INFORMATION layout");
+struct thr_row { DWORD tid; unsigned long long cyc, kt, ut; ULONG cs; };
+struct thr_snap {
+    unsigned long long tsc, qpc; int n;
+    thr_row r[512];
+    ps3_waitstat ws[PS3_WAITSTAT_MAX];
+};
+static SRWLOCK s_thr_lock = SRWLOCK_INIT;
+static struct { DWORD tid; HANDLE h; unsigned gen; } s_thr_h[1024];
+static int s_thr_hn = 0;
+static unsigned s_thr_gen = 0;
+static unsigned char* s_thr_buf = NULL;
+static ULONG s_thr_bufsz = 0;
+static DWORD s_thrcpu_tid = 0;
+
+static HANDLE thr_handle(DWORD tid)
+{
+    for (int i = 0; i < s_thr_hn; i++)
+        if (s_thr_h[i].tid == tid) { s_thr_h[i].gen = s_thr_gen; return s_thr_h[i].h; }
+    if (s_thr_hn >= 1024) return NULL;
+    HANDLE h = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, tid);
+    if (!h) return NULL;
+    s_thr_h[s_thr_hn].tid = tid; s_thr_h[s_thr_hn].h = h; s_thr_h[s_thr_hn].gen = s_thr_gen;
+    s_thr_hn++;
+    return h;
+}
+
+static int thr_take(thr_snap* s)
+{
+    typedef LONG (WINAPI* nqsi_t)(ULONG, PVOID, ULONG, PULONG);
+    static nqsi_t nqsi = (nqsi_t)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQuerySystemInformation");
+    s->n = 0;
+    if (!nqsi) return 0;
+    AcquireSRWLockExclusive(&s_thr_lock);
+    for (int tries = 0; tries < 4; tries++) {
+        ULONG need = 0;
+        LONG st = s_thr_buf ? nqsi(5 /* SystemProcessInformation */, s_thr_buf, s_thr_bufsz, &need) : (LONG)0xC0000004;
+        if (st == 0) break;
+        if (st != (LONG)0xC0000004) { ReleaseSRWLockExclusive(&s_thr_lock); return 0; }
+        if (s_thr_buf) VirtualFree(s_thr_buf, 0, MEM_RELEASE);
+        s_thr_bufsz = (need > s_thr_bufsz ? need : s_thr_bufsz) + (1u << 20);
+        s_thr_buf = (unsigned char*)VirtualAlloc(NULL, s_thr_bufsz, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (!s_thr_buf) { s_thr_bufsz = 0; ReleaseSRWLockExclusive(&s_thr_lock); return 0; }
+        if (tries == 3) { ReleaseSRWLockExclusive(&s_thr_lock); return 0; }
+    }
+    s_thr_gen++;
+    const DWORD pid = GetCurrentProcessId();
+    for (unsigned char* p = s_thr_buf;;) {
+        const ULONG next = *(const ULONG*)p, nthr = *(const ULONG*)(p + 4);
+        const DWORD ppid = (DWORD)(uintptr_t)*(HANDLE const*)(p + 0x50);
+        if (ppid == pid) {
+            const thr_spi_thread* t = (const thr_spi_thread*)(p + 0x100);
+            for (ULONG i = 0; i < nthr && s->n < 512; i++) {
+                thr_row& r = s->r[s->n++];
+                r.tid = (DWORD)(uintptr_t)t[i].tid;
+                r.kt = (unsigned long long)t[i].kt.QuadPart; r.ut = (unsigned long long)t[i].ut.QuadPart;
+                r.cs = t[i].cs; r.cyc = 0;
+                HANDLE h = thr_handle(r.tid);
+                ULONG64 c = 0;
+                if (h && QueryThreadCycleTime(h, &c)) r.cyc = c;
+            }
+            break;
+        }
+        if (!next) break;
+        p += next;
+    }
+    /* close the handles of threads that have exited */
+    for (int i = 0; i < s_thr_hn;) {
+        if (s_thr_h[i].gen != s_thr_gen) { CloseHandle(s_thr_h[i].h); s_thr_h[i] = s_thr_h[--s_thr_hn]; }
+        else i++;
+    }
+    LARGE_INTEGER q; QueryPerformanceCounter(&q);
+    s->qpc = (unsigned long long)q.QuadPart; s->tsc = __rdtsc();
+    memcpy(s->ws, (const void*)g_ps3_waitstat, sizeof s->ws);
+    ReleaseSRWLockExclusive(&s_thr_lock);
+    return s->n;
+}
+
+static void thr_name(DWORD tid, char* out, size_t cap)
+{
+    out[0] = 0;
+    if (!tid) return;
+    if (tid == s_dbg_main_tid) { snprintf(out, cap, "main"); return; }
+    if (tid == (DWORD)rsx_fifo_host_tid()) { snprintf(out, cap, "RSX-FIFO"); return; }
+    if (tid == (DWORD)rsx_render_host_tid()) { snprintf(out, cap, "RSX-render"); return; }
+    if (tid == s_thrcpu_tid) { snprintf(out, cap, "thrcpu"); return; }
+    for (unsigned i = 0; i < 2; i++)
+        if (tid == (DWORD)spu_raw_host_tid(i)) { snprintf(out, cap, "rawSPU%u", i); return; }
+    for (unsigned i = 0; i < 8; i++)
+        if (tid == (DWORD)spurs_lane_host_tid(i)) { snprintf(out, cap, "SPURS%u", i); return; }
+    if (const char* g = ppu_name_by_host_tid(tid)) { snprintf(out, cap, "ppu:%s", g); return; }
+    HANDLE h = OpenThread(THREAD_QUERY_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION, FALSE, tid);
+    if (!h) h = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, tid);
+    if (!h) { snprintf(out, cap, "tid%lu", (unsigned long)tid); return; }
+    typedef HRESULT (WINAPI* gtd_t)(HANDLE, PWSTR*);
+    static gtd_t gtd = (gtd_t)GetProcAddress(GetModuleHandleA("kernel32.dll"), "GetThreadDescription");
+    PWSTR d = NULL;
+    if (gtd && SUCCEEDED(gtd(h, &d)) && d && d[0]) {
+        snprintf(out, cap, "%ls", d);
+        LocalFree(d); CloseHandle(h); return;
+    }
+    if (d) LocalFree(d);
+    /* else where it started: module + RVA (symbolize exe RVAs with the pdb) */
+    typedef LONG (WINAPI* nqit_t)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+    static nqit_t nqit = (nqit_t)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationThread");
+    PVOID sa = NULL;
+    if (nqit && nqit(h, 9 /* ThreadQuerySetWin32StartAddress */, &sa, sizeof sa, NULL) == 0 && sa) {
+        HMODULE m = NULL;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               (LPCSTR)sa, &m) && m) {
+            char mp[MAX_PATH]; GetModuleFileNameA(m, mp, sizeof mp);
+            const char* b = strrchr(mp, 92); b = b ? b + 1 : mp;
+            snprintf(out, cap, "%s+0x%llX", m == GetModuleHandleA(NULL) ? "exe" : b,
+                     (unsigned long long)((uintptr_t)sa - (uintptr_t)m));
+        } else snprintf(out, cap, "start@%p", sa);
+    } else snprintf(out, cap, "tid%lu", (unsigned long)tid);
+    CloseHandle(h);
+}
+
+/* table = 0: one [thrcpu] line with the top `maxn`; 1: a full table. */
+static void thr_report(const thr_snap& a, const thr_snap& b, int maxn, int table, void (*out)(const char*))
+{
+    static const double qf = (double)ps3_qpc_freq();
+    const double secs = (double)(b.qpc - a.qpc) / qf;
+    const double dtsc = (double)(b.tsc - a.tsc);
+    if (secs <= 0.05 || dtsc <= 0) return;
+    struct R { DWORD tid; double busy, usr, krn, csps; int ws; };
+    static R rows[512];
+    int n = 0; double total = 0;
+    for (int i = 0; i < b.n; i++) {
+        const thr_row& y = b.r[i];
+        const thr_row* x = NULL;
+        for (int j = 0; j < a.n; j++) if (a.r[j].tid == y.tid) { x = &a.r[j]; break; }
+        R& r = rows[n];
+        r.tid = y.tid;
+        r.busy = x && y.cyc >= x->cyc ? 100.0 * (double)(y.cyc - x->cyc) / dtsc : 0;
+        r.usr  = x ? 100.0 * (double)(y.ut - x->ut) / (secs * 1e7) : 0;
+        r.krn  = x ? 100.0 * (double)(y.kt - x->kt) / (secs * 1e7) : 0;
+        r.csps = x ? (double)(y.cs - x->cs) / secs : 0;
+        if (!y.cyc && r.usr + r.krn > 0) r.busy = r.usr + r.krn;   /* no handle: kernel times */
+        r.ws = -1;
+        for (int k = 0; k < PS3_WAITSTAT_MAX; k++) if (b.ws[k].tid == y.tid) { r.ws = k; break; }
+        total += r.busy;
+        n++;
+    }
+    std::sort(rows, rows + n, [](const R& p, const R& q) { return p.busy > q.busy; });
+    char ln[8192]; int p = 0;
+    SYSTEM_INFO si; GetSystemInfo(&si);
+    if (table)
+        p = snprintf(ln, sizeof ln, "[thrcpu] %.1f s, %d threads, %.2f of %lu logical CPUs busy\n"
+                     "  %-26s %6s %5s %5s %8s | %5s %5s %7s %5s %5s %6s\n", secs, n, total / 100.0,
+                     (unsigned long)si.dwNumberOfProcessors, "thread", "busy%", "usr%", "krn%", "cs/s",
+                     "spin%", "slp%", "yld/s", "lwm%", "lwc%", "early");
+    else
+        p = snprintf(ln, sizeof ln, "[thrcpu] %.1fs %.2f cpus:", secs, total / 100.0);
+    for (int i = 0; i < n && i < maxn; i++) {
+        const R& r = rows[i];
+        if (r.busy < (table ? 0.5 : 2.0)) break;
+        char nm[96]; thr_name(r.tid, nm, sizeof nm);
+        double spin = 0, slp = 0, yld = 0, lwm = 0, lwc = 0; unsigned long long early = 0;
+        if (r.ws >= 0) {
+            const ps3_waitstat& y = b.ws[r.ws]; const ps3_waitstat& x = a.ws[r.ws];
+            const double w = secs * qf / 100.0;
+            if (x.tid == y.tid) {
+                spin = (double)(y.short_qpc - x.short_qpc) / w; slp = (double)(y.long_qpc - x.long_qpc) / w;
+                yld = (double)(y.yield_n - x.yield_n) / secs;
+                lwm = (double)(y.lwm_block_qpc - x.lwm_block_qpc) / w; lwc = (double)(y.lwc_wait_qpc - x.lwc_wait_qpc) / w;
+                early = y.early_n - x.early_n;
+            }
+        }
+        if (p >= (int)sizeof ln - 200) break;
+        if (table)
+            p += snprintf(ln + p, sizeof ln - p, "  %-26.26s %6.1f %5.1f %5.1f %8.0f | %5.1f %5.1f %7.0f %5.1f %5.1f %6llu\n",
+                          nm, r.busy, r.usr, r.krn, r.csps, spin, slp, yld, lwm, lwc, early);
+        else {
+            p += snprintf(ln + p, sizeof ln - p, "%s %s %.0f%%", i ? " |" : "", nm, r.busy);
+            if (spin >= 1 || slp >= 1 || lwm >= 1 || lwc >= 1)
+                p += snprintf(ln + p, sizeof ln - p, "(spin %.0f slp %.0f lwm %.0f lwc %.0f)", spin, slp, lwm, lwc);
+            if (r.csps >= 20000) p += snprintf(ln + p, sizeof ln - p, "[%.0fk cs/s]", r.csps / 1000);
+        }
+    }
+    if (!table) p += snprintf(ln + p, sizeof ln - p, "\n");
+    out(ln);
+}
+
+static void thr_out_stderr(const char* s) { fputs(s, stderr); }
+static DWORD WINAPI thrcpu_monitor(LPVOID param)
+{
+    const unsigned sec = (unsigned)(uintptr_t)param;
+    s_thrcpu_tid = GetCurrentThreadId();
+    SetThreadDescription(GetCurrentThread(), L"thrcpu");
+    static thr_snap s[2];
+    int cur = 0;
+    thr_take(&s[cur]);
+    for (;;) {
+        Sleep(sec * 1000);
+        thr_take(&s[cur ^ 1]);
+        thr_report(s[cur], s[cur ^ 1], 14, 0, thr_out_stderr);
+        cur ^= 1;
+    }
+}
+/* PS3_THREAD_CPU=<seconds> (default 5; 0 = off) */
+static void thrcpu_start(void)
+{
+    const char* e = getenv("PS3_THREAD_CPU");
+    const int sec = e && *e ? atoi(e) : 5;
+    if (sec > 0) { HANDLE h = CreateThread(NULL, 0, thrcpu_monitor, (LPVOID)(uintptr_t)sec, 0, NULL); if (h) CloseHandle(h); }
+}
+/* The F11 / auto profile, plus the per-thread CPU table over the same window. */
+static void dbg_prof_frame_threads_cpu(unsigned sec)
+{
+    static thr_snap a, b;
+    thr_take(&a);
+    dbg_prof_frame_threads(sec);
+    thr_take(&b);
+    thr_report(a, b, 64, 1, dbg_out_str);
+}
+
 /* Resistance port: give the main guest thread a physical core to itself.
  * The main thread is the frame-rate limiter (lifted game code), and this
  * process runs far more busy threads than the CPU has: SPURS lanes and raw
@@ -550,6 +793,7 @@ static void dbg_prof_frame_threads(unsigned sec)
  * PORT_MAIN_CORE=0 disables. */
 static DWORD WINAPI main_core_keeper(LPVOID)
 {
+    SetThreadDescription(GetCurrentThread(), L"affinity keeper");
     const char* e = getenv("PORT_MAIN_CPU");
     const int cpu = e ? atoi(e) : 2;   /* not CPU 0: Windows routes most interrupts there */
     DWORD_PTR proc = 0, sys = 0;
@@ -820,7 +1064,7 @@ static DWORD WINAPI debug_console(LPVOID param)
                 char* sl = strrchr(fp, 92);
                 if (sl) { strcpy(sl + 1, "ftrace.now");
                           FILE* ff = fopen(fp, "wb"); if (ff) { fputs("10", ff); fclose(ff); } } }
-              dbg_prof_frame_threads(6);
+              dbg_prof_frame_threads_cpu(6);
               dbg_fifo_mhist(3);
               if (s_dbg_out) { fclose(s_dbg_out); s_dbg_out = NULL; }
               fprintf(stderr, "[dbg] F11 profile written%c", 10);
@@ -870,7 +1114,7 @@ static DWORD WINAPI debug_console(LPVOID param)
                 /* v124: the dips are on the RSX side now -- the render thread
                  * (D3D12 recording) and the FIFO thread (decode + prepass) first,
                  * then the main thread */
-                dbg_prof_frame_threads(6);
+                dbg_prof_frame_threads_cpu(6);
                 if (s_dbg_out) { fclose(s_dbg_out); s_dbg_out = NULL; }
                 fprintf(stderr, "[dbg] auto-profile written%c", 10);
                 ap_last = cellGcm_flip_request_count();
@@ -1031,6 +1275,7 @@ static DWORD WINAPI debug_console(LPVOID param)
  * SPU register files to logs\freeze_<n>.txt, start a fresh copy of this
  * program with the same command line, environment and console, and end this
  * one -- so a freeze costs a restart, not a person at the keyboard. */
+extern "C" volatile int g_r2pc_paused;   /* r2_pcport.cpp: paused on purpose (not a freeze) */
 static DWORD WINAPI freeze_relauncher(LPVOID)
 {
     const char* e = getenv("FREEZE_RELAUNCH");
@@ -1044,7 +1289,7 @@ static DWORD WINAPI freeze_relauncher(LPVOID)
     for (;;) {
         Sleep(1000);
         const unsigned f = cellGcm_flip_request_count();
-        if (f != last || f < 200) { last = f; still = 0; continue; }
+        if (f != last || f < 200 || g_r2pc_paused) { last = f; still = 0; continue; }
         if (++still < secs) continue;
         static int n = 0;
         { char fn[64]; snprintf(fn, sizeof fn, "logs\\freeze_%lu_%d.txt", (unsigned long)GetTickCount(), n++);
