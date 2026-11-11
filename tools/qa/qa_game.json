@@ -1,0 +1,60 @@
+{
+ "game": "r2",
+ "exe": ["build_qa\\Resistance2.exe", "build\\Resistance2.exe"],
+ "args": ["{root}\\game\\EBOOT.elf"],
+ "env_from": ["settings.bat"],
+ "env": {
+  "SPURS_PM_YIELD": "0", "SPURS_IDLE_POLL": "0", "PS3_VFS_ROOT": "{root}\\gamefiles", "R2_RSX": "vulkan",
+  "R2_FPS": "60", "R2_BACKGROUND": "run"
+ },
+ "capture": "renderer",
+ "capture_env": {},
+ "fps_regex": "\\[r2rsx-prof\\] [0-9.]+s: ([0-9.]+) fps",
+ "logs": ["{run}\\out.log", "{run}\\run.log", "{root}\\logs\\rpcs3_rsx.log"],
+ "capture_steps": [
+  "wait 95",
+  "pad 4000 6", "pad 0008 10", "pad 0008 20", "pad 0008 8",
+  "capture menu_main 4 30",
+  "pad 4000 4", "pad 0040 2", "pad 0040 2", "pad 4000 4", "pad 4000 4",
+  "pad 4000 60",
+  "capture heli_load 6 20",
+  "wait 8",
+  "capture heli_settle 6 20"
+ ],
+ "soak_boot_steps": [
+  "wait 95",
+  "pad 4000 6", "pad 0008 10", "pad 0008 20", "pad 0008 6",
+  "pad 4000 4", "pad 0040 2", "pad 0040 2", "pad 4000 4", "pad 4000 4",
+  "pad 4000 60"
+ ],
+ "soak": {
+  "env": {"R2_RSX_PROF": "1", "R2_FIFO_TRACE": "1", "R2_FIFO_TRACE_DIR": "{run}\\fifo_trace"},
+  "inputs": [
+   "pad 0000 128 0 128 128 2500",
+   "pad 0000 128 128 210 128 700",
+   "pad 0800 128 128 128 128 500",
+   "pad 0800 128 128 128 128 500",
+   "pad 0000 0 128 128 128 1500",
+   "pad 0000 128 128 128 80 400",
+   "pad 4000 128 128 128 128 200",
+   "pad 0000 128 255 128 128 1500",
+   "pad 0000 128 128 50 128 700",
+   "pad 0800 128 128 128 128 900",
+   "pad 0000 255 128 128 128 1500",
+   "pad 0000 128 128 128 180 400",
+   "pad 0400 128 128 128 128 300"
+  ],
+  "patterns": {
+   "fifo_recover": {"rx": "FIFO: recovering", "in": "rpcs3_rsx.log"},
+   "invalid_rsx_method": {"rx": "Invalid RSX method", "in": "rpcs3_rsx.log"},
+   "fifo_desync_dump": {"rx": "^\\[r2-fifo-trace\\] desync at"},
+   "fifo_recycle_overrun": {"rx": "^\\[r2-fifo-trace\\] recycle wait gave up"},
+   "sema_timeout": {"rx": "^\\[SEMA\\].*timed out|[Ss]emaphore.*(timed out|timeout)"},
+   "wcb_timeout": {"rx": "WCB: flush .* timed out"},
+   "hang_watchdog": {"rx": "^\\[hang\\] no game frame"},
+   "crash": {"rx": "^\\[crash\\] .*code 0x"},
+   "freeze_relaunch": {"rx": "^\\[freeze\\] stuck"}
+  },
+  "thresholds": {"mem_mb_per_min": 4.0, "mem_growth_mb": 150, "handles_per_min": 20}
+ }
+}

@@ -249,6 +249,8 @@ extern "C" void port_joblist_reset(uint32_t list)
  * poll a command job's status word). Recorded as SYSCALL spans with
  * a = 0x20000 | (tag & 0xFFFF), b = tag. */
 #include "ps3emu/ps3_ftrace.h"
+#define PORT_HITCH_IMPLEMENTATION
+#include "ps3emu/port_hitch.h"   /* [hitch] frame hitch logger (PORT_HITCH_LOG=0 off) */
 extern "C" unsigned long long port_ftw_now(void) { return PS3_FT_ON() ? ps3_ft_now() : 0ull; }
 extern "C" void port_ftw_span(unsigned tag, unsigned long long t0, ppu_context* ctx)
 {
@@ -440,7 +442,7 @@ extern "C" int port_frame_wait(uint64_t target, uint32_t last_ea)
       prev = now;
       if (!t0) t0 = now;
       if (now - t0 >= 5ull * 79800000ull && n) {
-          fprintf(stderr, "[fps] 5 s: %u frames, %.1f fps, frame %.2f ms avg, %.2f ms worst (target %d)\n",
+          port_log_async(1, "[fps] 5 s: %u frames, %.1f fps, frame %.2f ms avg, %.2f ms worst (target %d)\n",
                   n, n * 79800000.0 / (double)(now - t0), sum / n / 79800.0, (double)worst / 79800.0, (int)s_rf_mode);
           t0 = now; n = 0; sum = 0; worst = 0;
       } }
@@ -855,6 +857,18 @@ static DWORD WINAPI ptrace_key_thread(LPVOID) {
 }
 static int s_ptrace_key_init = (CloseHandle(CreateThread(NULL, 0, ptrace_key_thread, NULL, 0, NULL)), 0);
 static ULONGLONG s_ml_script_until;   /* v169: scripted camera active until (ms) */
+/* Local co-op: how many local players are in the game (split-screen when 2).
+ * The direct mouse look below is for one player; with two it is off and the
+ * mouse turns the keyboard player's right stick instead. */
+extern "C" int port_local_players(void)
+{
+    /* local player slots [[r2-0x77F4]-0x8000] (0x1210990): active flags at +0 and +1 */
+    const uint32_t t = vm_read32(0x00DED008u - 0x77F4u), b = t ? vm_read32(t - 0x8000u) : 0u;
+    const int n = b ? (vm_read8(b) ? 1 : 0) + (vm_read8(b + 1u) ? 1 : 0) : 0;
+    static int last = -1;
+    if (n != last) { if (last >= 0 || n > 1) fprintf(stderr, "[coop] local players: %d%c", n, 10); last = n; }
+    return n;
+}
 extern "C" void port_mouselook_pre(uint32_t player)
 {
     fall_watch(player);   /* v168 */
@@ -951,6 +965,7 @@ extern "C" void port_mouselook_pre(uint32_t player)
                   if (f) { fprintf(f, "t=%llu diff=%u d %.3f -> %.3f\n", GetTickCount64(), diff, d, base); fclose(f); } }
           } } }
     if (!g_ml_mode || !player) return;
+    if (port_local_players() > 1) return;   /* split-screen: the mouse is a right stick */
     ml_load();
     if (!ml_stick_is_mouse()) return;   /* controller / look keys: the stick turns the view as on PS3 */
     ml_check(g_ml_fed_rx, ml_rdf(player + 980), &s_ml_sx, &s_ml_bad_x, "yaw");
@@ -980,6 +995,7 @@ extern "C" void port_mouselook(uint32_t player)
       g_port_opts_ea = c ? vm_read32(c + 6848) : 0; }
     const ULONGLONG now = GetTickCount64();
     long dx = InterlockedExchange(&g_kbm_ml_dx, 0), dy = InterlockedExchange(&g_kbm_ml_dy, 0);
+    if (port_local_players() > 1) return;   /* split-screen: the mouse is a right stick */
     /* counts gathered while the look code was not running (menus, pause,
      * cutscenes, a vehicle) are dropped, not applied in one jump */
     if (now - s_ml_last > 150 || !g_kbm_capture || !ml_stick_is_mouse()) dx = dy = 0;
@@ -1153,15 +1169,25 @@ extern "C" double r2_fps_target(void)
     const int near_refresh = f > 0.0 && fabs(f - hz) < 1.0;
     const char* v = getenv("RSX_VSYNC");
     if (v && !_stricmp(v, "auto")) {
-        _putenv_s("RSX_VSYNC", near_refresh ? "1" : "adaptive");
+        /* FIFO whenever the cap is at or under the refresh: it then never waits, and it is the mode G-Sync /
+         * FreeSync follow (the old "adaptive" picked MAILBOX, which on Windows presents at the fixed refresh:
+         * a 60 cap on a 144 Hz VRR screen juddered 2/3 refreshes). Uncapped / above refresh: adaptive. */
+        _putenv_s("RSX_VSYNC", (f > 0.0 && f <= hz + 1.0) ? "1" : "adaptive");
         v = getenv("RSX_VSYNC");
     }
     const int full_vsync = v && _stricmp(v, "adaptive") && atoi(v) > 0;
     const char* sn = getenv("R2_FPS_SNAP");
     if (near_refresh && full_vsync && f != 30.0 && !(sn && *sn == '0')) f = hz;
     fps = f;
+    { char fb[32]; snprintf(fb, sizeof fb, "%.3f", f); _putenv_s("PORT_FPS_EFFECTIVE", fb); snprintf(fb, sizeof fb, "%.3f", hz); _putenv_s("PORT_DISPLAY_HZ", fb); }   /* PORT_REFRESH_SWITCH (rsx_null_backend.c) */
     fprintf(stderr, "[fps] target %s%.3f (display %.3f Hz, RSX_VSYNC=%s)\n",
             f > 0.0 ? "" : "uncapped ", f, hz, v ? v : "(unset)");
+    if (f > 0.0 && f != 30.0) {   /* a fixed-refresh display only paces evenly at a divisor of its rate */
+        const double q = hz / f;
+        if (fabs(q - floor(q + 0.5)) > 0.03)
+            fprintf(stderr, "[fps] note: %.0f fps on a %.0f Hz display holds frames for alternating %d / %d refreshes (judder) unless VRR / G-Sync is on; even rates: %.0f or %.0f (R2_FPS); exclusive fullscreen switches to an even refresh (PORT_REFRESH_SWITCH)\n",
+                    f, hz, (int)floor(q), (int)ceil(q), hz / ceil(q), floor(q) >= 1.0 ? hz / floor(q) : hz);
+    }
     return fps;
 }
 
@@ -1205,10 +1231,15 @@ extern "C" volatile LONG r2_game_frames;   /* main.cpp r2_crash.inc: hang watchd
 extern "C" volatile int g_r2pc_paused;     /* r2_pcport.cpp: focus pause / quit prompt */
 extern "C" volatile int g_ps3_host_paused; /* sys_ppu_thread.c: idle the SPU / RSX wait loops */
 extern "C" void r2pf_frame_tick(void);       /* r2_pcfeat.cpp: F3 overlay frame times */
+extern "C" void r2x_frame_tick(void);        /* r2_pcextra.cpp: FX patches, benchmark, Reflex */
 extern "C" double r2_frame_period(double f1)
 {
     InterlockedIncrement(&r2_game_frames);
-    r2pf_frame_tick();
+    int hitch_discard = 0;
+    { const uint64_t ht = port_hitch_t0();
+      r2pf_frame_tick();
+      r2x_frame_tick();
+      port_hitch_end(PH_TICK, ht); }
     /* PC port: hold the game's frame loop here while paused (window in the
      * background, R2_BACKGROUND=pause, or the quit prompt is up). The hang
      * watchdog is fed so a long pause is not taken for a hang. */
@@ -1217,6 +1248,7 @@ extern "C" double r2_frame_period(double f1)
         g_ps3_host_paused = 1;
         while (g_r2pc_paused) { Sleep(5); InterlockedIncrement(&r2_game_frames); }
         g_ps3_host_paused = 0;
+        hitch_discard = 1;
     }
     static int init = 0;
     static double fps = 30.0;
@@ -1245,9 +1277,10 @@ extern "C" double r2_frame_period(double f1)
         if (!t0) t0 = now;
         n++;
         if (now - t0 >= 5ull * 79800000ull) {
-            fprintf(stderr, "[fps] 5 s: %.1f fps (target 30)\n", n * 79800000.0 / (double)(now - t0));
+            port_log_async(1, "[fps] 5 s: %.1f fps (target 30)\n", n * 79800000.0 / (double)(now - t0));
             t0 = now; n = 0;
         }
+        port_hitch_frame(30.0, hitch_discard);
         return f1;
     }
 
@@ -1263,6 +1296,8 @@ extern "C" double r2_frame_period(double f1)
     if (fps > 0.0) {
         const double step = 79800000.0 / fps;
         if (next > 0.0 && (double)now < next) {
+            const uint64_t ht = port_hitch_t0();
+            struct hitch_scope { uint64_t t; ~hitch_scope() { port_hitch_end(PH_LIMIT, t); } } hs{ ht };
             if (precise) r2_pace_wait((uint64_t)next);
             else for (;;) {
                 now = ppu_timebase_now();
@@ -1286,10 +1321,11 @@ extern "C" double r2_frame_period(double f1)
       if (!t0) t0 = now;
       n++;
       if (now - t0 >= 5ull * 79800000ull) {
-          fprintf(stderr, "[fps] 5 s: %.1f fps (target %s%.3f)\n", n * 79800000.0 / (double)(now - t0),
+          port_log_async(1, "[fps] 5 s: %.1f fps (target %s%.3f)\n", n * 79800000.0 / (double)(now - t0),
                   fps > 0.0 ? "" : "uncapped ", fps);
           t0 = now; n = 0;
       } }
+    port_hitch_frame(fps, hitch_discard);
     return 0.0001;   /* the game's own wait then never holds the frame */
 }
 
@@ -1303,13 +1339,23 @@ static int r2ml_is_pad0(uint32_t slot)
     return slot - base < 0x1AC4u;
 }
 extern "C" volatile double g_ml_sens_y;   /* cellPad.c: PAD_MOUSE_SENS_Y */
+/* cellPad.c (SDL3): gyro aiming with player 1's controller, taken here like
+ * the mouse so it is not limited to the stick's resolution. */
+extern "C" int cellpad_gyro_active(void);
+extern "C" int cellpad_gyro_take(double* yaw_deg, double* pitch_deg);
+static int s_r2ml_gyro = 0;   /* this frame's call takes the gyro, not the mouse */
 extern "C" void r2_mouselook_pre(ppu_context* ctx, uint32_t hero, uint32_t slot, uint32_t sp)
 {
     s_r2ml_hero = 0;
     if (!g_ml_mode || !hero || !r2ml_is_pad0(slot)) return;
     g_r2_look_ms = GetTickCount64();
     r2ml_load();
-    if (!ml_stick_is_mouse()) return;   /* controller / look keys: the stick turns the view as on PS3 */
+    const int mouse = ml_stick_is_mouse();
+    /* a controller with gyro aiming: the stick still turns as on PS3, and the gyro adds to it */
+    const int gyro = !mouse && port_local_players() <= 1 && cellpad_gyro_active();
+    if (!mouse && !gyro) return;   /* controller / look keys: the stick turns the view as on PS3 */
+    s_r2ml_gyro = !mouse;
+    if (mouse) {
     const float ry = ml_rdf(sp + 0x90), rp = ml_rdf(sp + 0x94);
     r2ml_check(g_ml_fed_rx, ry, &s_r2ml_sx, &s_r2ml_bad_x, "yaw");
     r2ml_check(g_ml_fed_ry, rp, &s_r2ml_sy, &s_r2ml_bad_y, "pitch");
@@ -1318,6 +1364,7 @@ extern "C" void r2_mouselook_pre(ppu_context* ctx, uint32_t hero, uint32_t slot,
     { const int big = g_ml_fed_rx >= 40 || g_ml_fed_rx <= -40 || g_ml_fed_ry >= 40 || g_ml_fed_ry <= -40;
       if (big && ry == 0.0f && rp == 0.0f) { if (++s_r2ml_lock_n >= 3) s_r2ml_lock_until = GetTickCount64() + 300; }
       else if (big) s_r2ml_lock_n = 0; }
+    }
     s_r2ml_zoom = 1.0f;
     if (vm_read16(hero + 0xAEC)) {   /* zoomed: the game scales the stick's yaw rate by f29 */
         const double z = ctx->fpr[29];
@@ -1329,8 +1376,10 @@ extern "C" void r2_mouselook_pre(ppu_context* ctx, uint32_t hero, uint32_t slot,
                                                    if (ads < 0.1) ads = 0.1; if (ads > 3.0) ads = 3.0; }
         s_r2ml_zoom = (float)(s_r2ml_zoom * ads);
     }
-    ml_wrf(sp + 0x90, 0.0f);
-    ml_wrf(sp + 0x94, 0.0f);
+    if (mouse) {
+        ml_wrf(sp + 0x90, 0.0f);
+        ml_wrf(sp + 0x94, 0.0f);
+    }
     s_r2ml_hero = hero;
 }
 extern "C" void r2_mouselook(ppu_context* ctx, uint32_t hero)
@@ -1339,6 +1388,14 @@ extern "C" void r2_mouselook(ppu_context* ctx, uint32_t hero)
     const ULONGLONG now = GetTickCount64();
     const int mine = hero == s_r2ml_hero; s_r2ml_hero = 0;
     if (!mine) return;
+    if (s_r2ml_gyro) {
+        double gy, gp;
+        if (!cellpad_gyro_take(&gy, &gp) || (gy == 0.0 && gp == 0.0)) return;
+        const double k = (double)s_r2ml_zoom * (3.14159265358979323846 / 180.0);
+        ctx->fpr[1]  = (double)(float)(ctx->fpr[1]  + (double)s_r2ml_sx * gy * k);
+        ctx->fpr[29] = (double)(float)(ctx->fpr[29] + (double)s_r2ml_sy * gp * k);
+        return;
+    }
     long dx = InterlockedExchange(&g_kbm_ml_dx, 0), dy = InterlockedExchange(&g_kbm_ml_dy, 0);
     /* counts gathered while this code was not running (menus, pause,
      * cutscenes, a vehicle) are dropped, not applied in one jump */
@@ -1446,13 +1503,14 @@ static inline uint32_t be32p(const uint8_t* q) { return (uint32_t)((q[0] << 24) 
  * presses Start (cellPad.c); cleared as soon as the player's look code runs,
  * so in play Space is only jump and never pauses. */
 extern "C" volatile int g_port_space_start;
+extern "C" unsigned cellpad_menu_buttons(int* any_connected);   /* cellPad.c */
 extern "C" void port_text_patch(uint32_t file_obj)
 {
     static int en = -1;
     if (en < 0) { const char* e = getenv("PORT_KEY_PROMPTS"); en = e ? atoi(e) : 1; }
     if (!en || !file_obj) return;
     int pad = 0;   /* controller: keep the PS3 icons, only reword the grapple line (v157) */
-    { XINPUT_STATE xs; if (XInputGetState(0, &xs) == ERROR_SUCCESS) pad = 1; }
+    cellpad_menu_buttons(&pad);   /* any controller (SDL3 or XInput) */
     const uint32_t base = vm_read32(file_obj + 4);
     if (!base || vm_read32(base) != 0x49474857u) return;        /* "IGHW" */
     const uint32_t n = vm_read32(base + 8);
@@ -1776,55 +1834,11 @@ static void r2_input_mode(int mode)
 }
 extern "C" void (*volatile g_r2_input_mode_cb)(int mode);
 extern "C" volatile int g_port_input_mode;           /* cellPad.c: the current prompt mode */
-/* PC port: console wording in the English text (core_text_tags) -> PC wording,
- * in place (every replacement is shorter than what it replaces; the rest of
- * the string's bytes become NULs). Runs on each text file as it is registered,
- * before the button glyphs are handled. R2_PC_TEXT=0 turns this off. */
-static int r2_pc_text(uint8_t* p, uint32_t end)
-{
-    static int en = -1;
-    if (en < 0) { const char* e = getenv("R2_PC_TEXT"); en = e ? atoi(e) : 1; }
-    if (!en) return 0;
-    static const struct { const char* find; const char* repl; int to_end; } rules[] = {
-        { "shake the wireless controller or the left and right sticks", "shake the mouse or the left and right sticks", 0 },
-        { "Shaking the wireless controller", "Shaking the mouse or the sticks", 0 },
-        { "using the motion sensor function of the wireless controller", "by shaking the mouse or the left and right sticks", 0 },
-        { " or a quick jab with the wireless controller", "", 0 },
-        { "Wireless controller %d has been disconnected.", "Controller %d has been disconnected.", 0 },
-        { "Press and hold the PS button to quit the application.", "Press F10 to quit the game.", 0 },
-        { "Insufficient hard disk space.", "Insufficient disk space.", 0 },
-        { "Your HDD has insufficient space.", "Insufficient disk space.", 0 },
-        { "The HDD access indicator will blink during save operations.",
-          "Do not quit the game or turn off your PC while this indicator is on screen.", 1 },
-        { "Please do not turn off your PLAYSTATION", "Please do not close the game during this time.", 1 },
-        { "sleep with a PS3 controller", "sleep with a controller", 0 },
-    };
-    int n = 0;
-    for (uint32_t i = 1; i < end; i++) {
-        if (p[i - 1] != 0 || p[i] == 0) continue;
-        uint32_t m = 0; while (i + m < end && p[i + m]) m++;
-        if (i + m >= end) break;
-        for (auto& r : rules) {
-            const size_t fl = strlen(r.find), rl = strlen(r.repl);
-            if (fl > m) continue;
-            uint8_t* s = p + i; uint32_t len = m;
-            for (uint32_t k = 0; k + fl <= len; k++) {
-                if (memcmp(s + k, r.find, fl)) continue;
-                const uint32_t tail = r.to_end ? 0 : (uint32_t)(len - k - fl);
-                if (k + rl + tail > len) break;
-                memmove(s + k + rl, s + k + fl, tail);
-                memcpy(s + k, r.repl, rl);
-                memset(s + k + rl + tail, 0, len - (k + rl + tail));
-                len = (uint32_t)(k + rl + tail);
-                n++;
-                break;
-            }
-        }
-        i += m;
-    }
-    if (n) { static int said = 0; if (said++ < 4) fprintf(stderr, "[prompts] text file: %d console wording(s) -> PC wording%c", n, 10); }
-    return n;
-}
+/* PC port: console wording -> PC wording in every text file (all languages),
+ * in place; see r2_pctext.cpp (R2_PC_TEXT=0 turns it off). Runs on each text
+ * file as it is registered, before the button glyphs are handled. */
+extern "C" int port_pc_text(uint8_t* p, uint32_t end);
+static int r2_pc_text(uint8_t* p, uint32_t end) { return port_pc_text(p, end); }
 extern "C" void r2_text_patch(uint32_t file_obj)
 {
     static int en = -1;
@@ -2677,9 +2691,11 @@ extern "C" uint64_t port_movie_evwait_us(void)
     return (uint64_t)us;
 }
 
+extern "C" void cellUserInfo_register_select(void);   /* libs/system/cellUserInfo.c */
 extern "C" void ps3_load_prx_modules(void)
 {
     ps3_hle_register_ctx(0xFC52A7A9u, "sys_game_process_exitspawn", hle_game_process_exitspawn);
+    cellUserInfo_register_select();   /* local co-op: player 2 sign-in dialogs */
     menu_probe_start();   /* v160b diag */
 #ifdef _WIN32
     { static char dbgpath[1024];
@@ -2760,6 +2776,9 @@ extern "C" void ps3_load_prx_modules(void)
    with no limit. With spare cores that is harmless; on a 4-core CPU it holds the core the SPU
    worker it waits on needs. Offer the core to any ready thread (returns at once if none). */
 extern "C" int ps3_host_prio_boost(void);
+#ifdef PORT_TRACY
+#include "ps3emu/port_tracy.h"
+#endif
 /* On many-core hosts the loop used to be a bare load-compare-branch. One PAUSE per lap
    frees the shared core for its SMT sibling, which on a 6c/12t CPU is often an SPU
    worker. The SPU's store still shows up within one lap of about 50 ns. R2_SPIN_PAUSE=0
@@ -2768,6 +2787,9 @@ extern "C" void r2_spin_relax(void)
 {
     static const bool low = !ps3_host_prio_boost();
     static const bool pause = [] { const char* e = getenv("R2_SPIN_PAUSE"); return !e || atoi(e) != 0; }();
+#ifdef PORT_TRACY
+    PT_SPIN_LAP(PT_SPIN);   /* laps merge into one "spin" zone */
+#endif
     if (low) SwitchToThread();
     else if (pause) YieldProcessor();
 }

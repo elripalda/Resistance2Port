@@ -26,7 +26,9 @@
 //                           game's native 1280x704 (never drops to 1152x640).
 //   R2_PATCH_NO_LOADSHED=1  no GPU-time load shedding at all (resolution,
 //                           LOD distance x0.75, effect budgets).
-//   R2_PATCH_LOD_SCALE=<x>  LOD distance multiplier 1.0..2.0 (hook in r2.json).
+//   R2_PATCH_LOD_SCALE=<x>  LOD distance multiplier 1.0..4.0 (hook in r2.json).
+//   R2_FOV_SAFE=0           old FOV patch (constant poke, misaligned shadows);
+//                           default: FOV widened on the scene camera only.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -35,6 +37,7 @@
 
 extern "C" double r2_fps_target(void);   /* stubs.cpp: 30 = the game's own limiter */
 extern "C" double r2_lod_scale(void);
+static bool r2_fov_boot(float k);   /* R2_FOV_SAFE, below */
 
 namespace {
 
@@ -99,7 +102,8 @@ extern "C" void r2_patches_apply(void)
             if (x >= 0.3f && x <= 1.0f) v = x;
             else fprintf(stderr, "[patch] R2_PATCH_FOV_VALUE=%s out of range 0.3..1.0, using 0.7\n", e);
         }
-        if (poke32("fov", 0x00DE67E4u, 0x3F800000u, f2u(v)))
+        if (r2_fov_boot(v)) {}
+        else if (poke32("fov", 0x00DE67E4u, 0x3F800000u, f2u(v)))
             fprintf(stderr, "[patch] Extended FOV: on (%.3f)\n", u2f(vm_read32(0x00DE67E4u)));
     }
 
@@ -142,7 +146,7 @@ extern "C" void r2_patches_apply(void)
     else            fprintf(stderr, "[patch] LOD distance scale (R2_PATCH_LOD_SCALE): off\n");
 }
 
-/* R2_PATCH_LOD_SCALE=<1.0..2.0>, default 1.0 (off).
+/* R2_PATCH_LOD_SCALE=<1.0..4.0>, default 1.0 (off).
  *
  * func_001721C8 (the frame renderer) computes the LOD projection scale as
  * func_00652A60(view width, fov) * (0x00FC3954+0x48) and hands it to
@@ -158,9 +162,9 @@ extern "C" double r2_lod_scale(void)
         s = 1.0;
         if (const char* e = getenv("R2_PATCH_LOD_SCALE")) {
             const double x = atof(e);
-            if (x >= 1.0 && x <= 2.0) s = x;
+            if (x >= 1.0 && x <= 4.0) s = x;
             else if (*e && x != 0.0)
-                fprintf(stderr, "[patch] R2_PATCH_LOD_SCALE=%s out of range 1.0..2.0, using 1.0\n", e);
+                fprintf(stderr, "[patch] R2_PATCH_LOD_SCALE=%s out of range 1.0..4.0, using 1.0\n", e);
         }
     }
     return s;
@@ -273,10 +277,111 @@ extern "C" double r2_target_aspect(void)
     return live;
 }
 
+/* R2_FOV_SAFE (default on whenever a FOV is chosen): wider FOV without the
+ * misaligned shadows. The "Extended FOV" patch lowers the constant term K of
+ * the game's tan() approximation (func_00788068). Every tan() call in the game
+ * shares that constant, not only the camera's: the shadow cascade fitting, the
+ * light (spot / cube) frustums and other projection maths get the
+ * distorted tangent too, so shadow maps no longer cover what the widened
+ * camera sees and jump as the view moves. Safe mode leaves K at 1.0 and
+ * applies the very same widening only to the 16:9 scene camera frustums, at
+ * the two frustum setters (the hooks below). The culling frustum is that
+ * frustum, so it follows, and everything else keeps the original maths.
+ *
+ * K is still the interface: at boot the chosen value is remembered and the
+ * constant is set to a sentinel (just below 1.0); the PC menu's live FOV
+ * (r2_pcport.cpp) keeps poking the constant, and each poke is picked up here
+ * and replaced by the sentinel again (1.0 = Original). R2_FOV_SAFE=0 restores
+ * the plain constant patch. */
+static const uint32_t kFovConst = 0x00DE67E4u, kFovSentinel = 0x3F7FFFFFu;
+static float g_fov_k = 1.0f;     /* K the player chose */
+static int g_fov_safe = -1;
+
+static int fov_safe_mode(void)
+{
+    if (g_fov_safe < 0) {
+        g_fov_safe = env_flag("R2_FOV_SAFE") != 0;
+        fprintf(stderr, "[patch] FOV safe mode (R2_FOV_SAFE): %s\n", g_fov_safe ? "on" : "off");
+    }
+    return g_fov_safe;
+}
+
+/* Boot: in safe mode the chosen K is remembered and the constant gets the
+ * sentinel instead; false = plain constant patch. */
+static bool r2_fov_boot(float k)
+{
+    if (!fov_safe_mode()) return false;
+    if (!poke32("fov", kFovConst, 0x3F800000u, kFovSentinel)) return true;
+    g_fov_k = k;
+    fprintf(stderr, "[patch] Extended FOV: on (%.3f, safe: scene camera only)\n", k);
+    return true;
+}
+
+/* func_00788068 with constant term K (float maths as the game; the range
+ * reduction is irrelevant for the half-angles of a camera, < 85 deg). */
+static double game_tan(double x, double k)
+{
+    const double q = floor(x * (2.0 / 3.14159265358979323846) + 0.5);
+    const double r = x - q * (3.14159265358979323846 / 2.0);
+    const double r2 = r * r;
+    const double num = r + r * r2 * -0.0957823;
+    const double den = k + r2 * (-0.42911619 + r2 * 0.0097099366);
+    if (((long long)q) & 1) return num != 0.0 ? -den / num : 0.0;
+    return den != 0.0 ? num / den : 0.0;
+}
+
+static void fov_track(void)
+{
+    const uint32_t cur = vm_read32(kFovConst);
+    if (cur == kFovSentinel) return;
+    if (cur == 0x3F800000u) {                /* original constant */
+        if (g_fov_k != 1.0f) {               /* menu: back to Original */
+            g_fov_k = 1.0f;
+            fprintf(stderr, "[patch] FOV (safe): original\n");
+        }
+        return;
+    }
+    const float v = u2f(cur);
+    if (v >= 0.3f && v < 1.0f) {             /* a live poke from the PC menu */
+        g_fov_k = v;
+        vm_write32(kFovConst, kFovSentinel);
+        fprintf(stderr, "[patch] FOV (safe): %.3f\n", v);
+    }
+}
+
+/* R2_FOV_VIEWMODEL (default 0): the first-person arms/weapon keep the game's
+ * own FOV. The player camera builds two 16:9 frustums back to back
+ * (func_00712F84 at spawn, func_007129A0 / func_00712A50 per frame): the scene
+ * one at +0xD00 with the FOV at +0x2140 and a second one at +0x1100 with its
+ * own FOV (+0x2144) and a nearer near plane -- the viewmodel projection.
+ * Widened like the scene, the arm shrinks away from the screen edge and its
+ * cut-off end (the shoulder) comes into view. =1 widens it as well (old). */
+static bool viewmodel_frustum(const ppu_context* ctx)
+{
+    static int widen = -1;
+    if (widen < 0) {
+        widen = env_flag("R2_FOV_VIEWMODEL") == 1;
+        fprintf(stderr, "[patch] FOV viewmodel (R2_FOV_VIEWMODEL): %s\n", widen ? "widened" : "original FOV");
+    }
+    if (widen) return false;
+    const uint32_t lr = (uint32_t)ctx->lr;
+    return lr == 0x00712A28u || lr == 0x00712B4Cu || lr == 0x007132B8u;
+}
+
 extern "C" void r2_frustum_aspect(ppu_context* ctx, int hfov)
 {
     const double a = ctx->fpr[4];
     if (!(a > 1.70 && a < 1.86)) return;   /* only the 16:9 scene frustums */
+    if (fov_safe_mode() == 1) {
+        fov_track();
+        const double fov = ctx->fpr[3];
+        if (g_fov_k != 1.0f && fov > 1.0 && fov < 170.0 && !viewmodel_frustum(ctx)) {
+            const double h = fov * (3.14159265358979323846 / 360.0);
+            const double ratio = game_tan(h, g_fov_k) / game_tan(h, 1.0);
+            if (ratio > 1.0 && ratio < 20.0)
+                ctx->fpr[3] = (double)(float)(atan(tan(h) * ratio) * (360.0 / 3.14159265358979323846));
+        }
+    }
     const double t = r2_target_aspect();
     if (t <= 0.0) return;
     const double k = t / a;

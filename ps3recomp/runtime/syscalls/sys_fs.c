@@ -34,6 +34,11 @@ char            g_sys_fs_root[512] = ".";
 /* PC port: the opening logo movie is open (slot + 1, 0 = none); cellPad.c
  * presses Start/Cross while it is, to skip it (R2_SKIP_INTRO). */
 volatile int    g_port_intro_movie = 0;
+/* PC port extras (project r2_pcextra.cpp etc.): told about every opened / closed
+ * file (movies for cutscene skip, level names for Discord). slot -1 = an open
+ * through runtime/ppu/ppu_fs.cpp (no close callback). */
+void (*volatile g_port_file_open_cb)(int slot, const char* path) = 0;
+void (*volatile g_port_file_close_cb)(int slot) = 0;
 
 /* PC port: push every open file's buffered writes to disk (quit path). */
 void sys_fs_flush_all(void)
@@ -495,6 +500,7 @@ int64_t sys_fs_open(ppu_context* ctx)
     f->path[sizeof(f->path) - 1] = '\0';
     if (strstr(host_path, "c00_insom_fmv"))
         g_port_intro_movie = slot + 1;
+    { void (*cb)(int, const char*) = g_port_file_open_cb; if (cb) cb(slot, host_path); }
 
     /* FD is slot + 3 (reserve 0=stdin, 1=stdout, 2=stderr) */
     int32_t fd = slot + 3;
@@ -654,6 +660,7 @@ int64_t sys_fs_close(ppu_context* ctx)
     }
     f->active = 0;
     if (g_port_intro_movie == slot + 1) g_port_intro_movie = 0;
+    { void (*cb)(int) = g_port_file_close_cb; if (cb) cb(slot); }
 
     return CELL_OK;
 }

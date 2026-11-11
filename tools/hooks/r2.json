@@ -808,6 +808,118 @@
      "        r2_frustum_aspect(ctx, 0);"
     ]
    }
+  ],
+  "func_006483A8": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_006483A8(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" int r2_occ_wait(ppu_context* ctx);   /* R2: occlusion report wait (project/r2_hot.cpp, R2_OCC_WAIT_US) */",
+     "void func_006483A8(ppu_context* ctx) {",
+     "        if (r2_occ_wait(ctx)) return;"
+    ]
+   }
+  ],
+  "func_00A56E30": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_00A56E30(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" int r2_hot_memcpy(ppu_context* ctx);   /* R2: native memcpy (project/r2_hot.cpp, R2_HOT_NATIVE) */",
+     "void func_00A56E30(ppu_context* ctx) {",
+     "        if (r2_hot_memcpy(ctx)) return;"
+    ]
+   }
+  ],
+  "func_00A63258": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_00A63258(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" int r2_hot_memset(ppu_context* ctx);   /* R2: native memset (project/r2_hot.cpp, R2_HOT_NATIVE) */",
+     "void func_00A63258(ppu_context* ctx) {",
+     "        if (r2_hot_memset(ctx)) return;"
+    ]
+   }
+  ],
+  "func_00A59DB0": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_00A59DB0(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" int r2_hot_strcmp(ppu_context* ctx);   /* R2: native strcmp (project/r2_hot.cpp, R2_HOT_NATIVE) */",
+     "void func_00A59DB0(ppu_context* ctx) {",
+     "        if (r2_hot_strcmp(ctx)) return;"
+    ]
+   }
+  ],
+  "func_00A5A310": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_00A5A310(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" int r2_hot_strlen(ppu_context* ctx);   /* R2: native strlen (project/r2_hot.cpp, R2_HOT_NATIVE) */",
+     "void func_00A5A310(ppu_context* ctx) {",
+     "        if (r2_hot_strlen(ctx)) return;"
+    ]
+   }
+  ],
+  "func_00A5A180": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_00A5A180(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" int r2_hot_strcpy(ppu_context* ctx);   /* R2: native strcpy (project/r2_hot.cpp, R2_HOT_NATIVE) */",
+     "void func_00A5A180(ppu_context* ctx) {",
+     "        if (r2_hot_strcpy(ctx)) return;"
+    ]
+   }
+  ],
+  "func_00A63330": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_00A63330(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" int r2_hot_memcmp(ppu_context* ctx);   /* R2: native memcmp (project/r2_hot.cpp, R2_HOT_NATIVE) */",
+     "void func_00A63330(ppu_context* ctx) {",
+     "        if (r2_hot_memcmp(ctx)) return;"
+    ]
+   }
+  ],
+  "func_006BB908": [
+   {
+    "at": 0,
+    "ctx": null,
+    "rm": [
+     "void func_006BB908(ppu_context* ctx) {"
+    ],
+    "add": [
+     "extern \"C\" int r2_hot_gstrcmp(ppu_context* ctx);   /* R2: native game strcmp (project/r2_hot.cpp, R2_HOT_NATIVE) */",
+     "void func_006BB908(ppu_context* ctx) {",
+     "        if (r2_hot_gstrcmp(ctx)) return;"
+    ]
+   }
   ]
  },
  "preamble": [],

@@ -23,6 +23,7 @@ int ps3_perf_on(const char* name, int def);
  * thread is waiting. Also callable through the g_guest_mem_notify pointer. */
 extern volatile long g_guest_mem_seq;
 void ps3_guest_mem_notify(uint32_t ea);
+void ps3_guest_mem_notify_put(uint32_t ea);   /* SPU plain PUT; PS3_USLEEP_NOTIFY_PUT */
 extern void (*volatile g_guest_mem_notify)(uint32_t ea);
 
 /* Per-host-thread wait accounting (the [thrcpu] table in debugtools.inc):

@@ -722,6 +722,8 @@ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
         { extern SPU_THREAD_LOCAL void* g_spu_putrec; extern SPU_THREAD_LOCAL int g_spu_dry_put;
           extern void spu_putrec_note(uint32_t ea, const uint8_t* src, uint32_t size);
           if (g_spu_putrec) spu_putrec_note((uint32_t)ea, (const uint8_t*)ls_ptr, size); }
+        /* R2_FIFO_SPU_LOCK / R2_FIFO_TRACE (rpcs3_shim/r2_fifo_trace.cpp): NULL unless enabled. */
+        { extern void (*g_spu_put_pre_hook)(uint32_t, uint32_t); if (g_spu_put_pre_hook) g_spu_put_pre_hook((uint32_t)ea, size); }
         { extern SPU_THREAD_LOCAL int g_spu_dry_put; if (!g_spu_dry_put)
         {
             extern int  spu_coh_is_reserved(uint32_t);
@@ -758,6 +760,9 @@ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
                 }
             }
         } }
+        { extern void (*g_spu_put_post_hook)(uint32_t, uint32_t); if (g_spu_put_post_hook) g_spu_put_post_hook((uint32_t)ea, size); }
+        /* a PPU short-usleep poll (job-completion wait) re-checks now */
+        { extern void ps3_guest_mem_notify_put(uint32_t); ps3_guest_mem_notify_put((uint32_t)ea); }
         /* Tell whoever is listening where this PUT landed.
          *
          * A title whose SPUs build the RSX command stream never tells libgcm
@@ -767,6 +772,9 @@ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
          * find the pushbuffer; NULL for every title that does not. */
         { extern void (*g_spu_put_hook)(uint32_t ea, uint32_t size);
           if (g_spu_put_hook) g_spu_put_hook((uint32_t)ea, size); }
+        { extern volatile uint32_t g_semfix_base;   /* R3_SEMFIX: label release/clear order */
+          extern void semfix_note_spu(uint32_t, uint32_t);
+          if (g_semfix_base && (uint32_t)ea - g_semfix_base < 0x1000u) semfix_note_spu((uint32_t)ea, size); }
         /* Bink sync-area watch (armed by the PPU barrier probe): log SPU PUTs
          * that touch the per-SPU lane counters. */
         { extern uint32_t g_barrier_sync_watch;
