@@ -1,12 +1,18 @@
 # Resistance 2 PC port: community beta release notes
 
-**Version:** 0.2.1-beta (GitHub pre-release). **Release date:** _to be filled in on release_.
+**Version:** 0.2.2-beta (GitHub pre-release). **Release date:** _to be filled in on release_.
 
 A native PC port of *Resistance 2* (PS3) built by static recompilation: the game's PowerPC and SPU code is translated to C/C++ and compiled for Windows. Graphics go through RPCS3's Vulkan renderer, built into the game as a library.
 
 > **No game files and no prebuilt game are included.** This release is the source code plus Setup. You need your own legally dumped copy of the game (see *Install*); Setup builds the game on your PC from that copy.
 
 This is a **beta**. The campaign has been played through the opening Iceland levels on one PC (Ryzen 5 5600X, GeForce RTX 5070, Windows 11). Later levels are untested. Please report what you find (see *Reporting problems*).
+
+## 0.2.2-beta (setup hotfix)
+
+- **Fixed: the build could fail right away with a Ninja/CMake error** ("build.ninja still dirty", or CMake re-running in a loop) for players in time zones behind ours. Files from the download could be dated a few hours in the future. The installer and zips now carry correct times, and the build resets any future-dated files before it starts.
+
+If your setup failed this way: install 0.2.2 (or wait a few hours) and run Setup again; it continues where it stopped.
 
 ## 0.2.1-beta (setup hotfix)
 
